@@ -559,8 +559,8 @@ function WritingApp(){
   // ── Styles ─────────────────────────────────────────────────────
   const S={
     app:{background:"#0d1117",height:"100vh",display:"flex",flexDirection:"column",fontFamily:"-apple-system,system-ui,sans-serif",color:"#c9d1d9",overflow:"hidden"},
-    header:{display:"flex",alignItems:"center",gap:"6px",padding:"0 12px",height:"44px",background:"#0d1117",borderBottom:"1px solid #21262d",flexShrink:0},
-    titleInput:{flex:1,fontSize:"13px",color:"#8b949e",border:"none",background:"none",outline:"none",fontFamily:"inherit"},
+    header:{display:"flex",alignItems:"center",gap:"6px",padding:"0 8px",height:"44px",background:"#0d1117",borderBottom:"1px solid #21262d",flexShrink:0,overflow:"hidden"},
+    titleInput:{flex:"0 1 90px",minWidth:"40px",fontSize:"13px",color:"#8b949e",border:"none",background:"none",outline:"none",fontFamily:"inherit"},
     paraBtn:a=>({padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${a?"#58a6ff":"#30363d"}`,background:a?"#0d1f3c":"none",color:a?"#58a6ff":"#8b949e",fontFamily:"monospace"}),
     overviewBtn:a=>({padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${a?"#bc8cff":"#30363d"}`,background:a?"#1a0f2e":"none",color:a?"#bc8cff":"#8b949e",fontFamily:"monospace"}),
     imgBtn:a=>({padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${a?"#d29922":"#30363d"}`,background:a?"#1a1500":"none",color:a?"#d29922":"#8b949e",fontFamily:"monospace"}),
@@ -600,7 +600,7 @@ function WritingApp(){
       {/* Header */}
       <div style={S.header}>
         <input value={docTitle} onChange={e=>{setDocTitle(e.target.value);setTimeout(save,300);}} style={S.titleInput}/>
-        <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
+        <div style={{display:"flex",alignItems:"center",gap:"5px",overflowX:"auto",WebkitOverflowScrolling:"touch",flexShrink:0,maxWidth:"calc(100% - 100px)"}}>
           <span style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58"}}>{text.length}字</span>
           <button onClick={()=>changeFontSize(-1)} style={{...S.logBtn,fontSize:"11px",fontWeight:"bold"}}>A-</button>
           <span style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",minWidth:"20px",textAlign:"center"}}>{fontSize}</span>
