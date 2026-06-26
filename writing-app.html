@@ -1,0 +1,846 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="執筆記録">
+  <title>執筆認証記録</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.2/babel.min.js"></script>
+  <style>* {box-sizing:border-box;margin:0;padding:0;} html,body{height:100%;background:#0d1117;overflow:hidden;} #root{height:100%;}</style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-presets="react">
+const { useState, useEffect, useRef, useMemo } = React;
+
+
+// ── Utilities ──────────────────────────────────────────────────
+function computeDiff(a,b){let s=0,ae=a.length,be=b.length;while(s<Math.min(ae,be)&&a[s]===b[s])s++;while(ae>s&&be>s&&a[ae-1]===b[be-1]){ae--;be--;}return{pos:s,del:ae-s,ins:b.slice(s,be)};}
+function applyDiff(t,{pos,del,ins}){return t.slice(0,pos)+ins+t.slice(pos+del);}
+function splitSentences(text){
+  const out=[];let start=0;
+  for(let i=0;i<text.length;i++){
+    const c=text[i];let isEnd=false;
+    if('。！？'.includes(c)){isEnd=true;}
+    else if(c==='!'||c==='?'){isEnd=true;}
+    else if(c==='.'){
+      const prev=i>0?text[i-1]:'',next=i<text.length-1?text[i+1]:'';
+      const isDecimal=/\d/.test(prev)&&/\d/.test(next);
+      if(!isDecimal){const rest=text.slice(i+1);isEnd=rest===''||/^[ \t]+[A-Z\u201C"']/.test(rest)||/^[ \t]*$/.test(rest);}
+    }
+    if(isEnd){const s=text.slice(start,i+1);if(s.trim())out.push(s);start=i+1;}
+  }
+  if(start<text.length&&text.slice(start).trim())out.push(text.slice(start));
+  return out.filter(s=>s.trim());
+}
+function parseToBlocks(text){const blocks=[];let pos=0;while(pos<text.length){while(pos<text.length&&text[pos]==='\n')pos++;if(pos>=text.length)break;const bs=pos;let end=pos;while(end<text.length&&text[end]!=='\n')end++;const raw=text.slice(pos,end);if(!raw.trim()){pos=end;continue;}const hm=raw.match(/^(#{1,5})\s+(.*)/);if(hm)blocks.push({type:'heading',level:hm[1].length,text:hm[2].trim(),start:bs});else blocks.push({type:'paragraph',text:raw,sentences:splitSentences(raw),start:bs});pos=end;}return blocks;}
+function wc(t){return t.trim()?t.trim().split(/\s+/).length:0;}
+function fmtTime(ms){if(!ms)return"0:00";const s=Math.floor(ms/1000);return`${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`;}
+function fmtFull(ms){const d=new Date(ms);return d.toTimeString().slice(0,8)+"."+String(d.getMilliseconds()).padStart(3,"0");}
+function sleep(ms){return new Promise(r=>setTimeout(r,ms));}
+async function compressImage(file){return new Promise(resolve=>{const reader=new FileReader();reader.onload=e=>{const img=new Image();img.onload=()=>{const max=1400;let{width:w,height:h}=img;if(w>max||h>max){if(w>h){h=h*max/w;w=max;}else{w=w*max/h;h=max;}}const canvas=document.createElement('canvas');canvas.width=Math.round(w);canvas.height=Math.round(h);canvas.getContext('2d').drawImage(img,0,0,Math.round(w),Math.round(h));resolve(canvas.toDataURL('image/jpeg',0.75));};img.src=e.target.result;};reader.readAsDataURL(file);});}
+function flagKey(t){let h=0;for(let i=0;i<t.length;i++)h=(Math.imul(31,h)+t.charCodeAt(i))|0;return h.toString(36);}
+function measureCursorTop(ta,pos){const m=document.createElement('div');const cs=window.getComputedStyle(ta);['fontFamily','fontSize','fontWeight','lineHeight','letterSpacing','paddingTop','paddingRight','paddingBottom','paddingLeft','boxSizing','whiteSpace','wordWrap','wordBreak'].forEach(p=>{m.style[p]=cs[p];});m.style.cssText+=';position:absolute;visibility:hidden;width:'+ta.clientWidth+'px;height:auto;overflow:hidden;';m.textContent=ta.value.slice(0,pos)||' ';document.body.appendChild(m);const h=m.scrollHeight;document.body.removeChild(m);return h;}
+
+// ── Sound Engine ───────────────────────────────────────────────
+let _actx=null;
+const _getCtx=()=>{if(!_actx)_actx=new(window.AudioContext||window.webkitAudioContext)();if(_actx.state==='suspended')_actx.resume().catch(()=>{});return _actx;};
+const _unlockAudio=()=>{try{const c=_getCtx();if(c.state==='suspended'){c.resume().catch(()=>{});const buf=c.createBuffer(1,1,22050);const src=c.createBufferSource();src.buffer=buf;src.connect(c.destination);src.start(0);}}catch(_){}};
+document.addEventListener('touchstart',_unlockAudio,{passive:true});
+document.addEventListener('mousedown',_unlockAudio,{passive:true});
+document.addEventListener('visibilitychange',()=>{if(!document.hidden&&_actx&&_actx.state==='suspended')_actx.resume().catch(()=>{});});
+window.addEventListener('focus',()=>{if(_actx&&_actx.state==='suspended')_actx.resume().catch(()=>{});});
+const _resetAudioCtx=()=>{try{if(_actx)_actx.close().catch(()=>{});}catch(_){}; _actx=null;try{const c=_getCtx();const buf=c.createBuffer(1,1,22050);const src=c.createBufferSource();src.buffer=buf;src.connect(c.destination);src.start(0);}catch(_){}};
+const _tone=(freqs,{type='triangle',vol=0.22,gap=80,dur=0.25}={})=>{try{const c=_getCtx();if(c.state==='suspended'){c.resume().catch(()=>{});return;}freqs.forEach((f,i)=>{if(!f)return;const t=c.currentTime+i*gap/1000;const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type=type;o.frequency.value=f;g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.001,t+dur);o.start(t);o.stop(t+dur+0.05);});}catch(_){}};
+const _sweep=(f0,f1,dur,vol)=>{try{const c=_getCtx(),t=c.currentTime;const o=c.createOscillator(),g=c.createGain();o.connect(g);g.connect(c.destination);o.type='sine';o.frequency.setValueAtTime(f0,t);o.frequency.exponentialRampToValueAtTime(f1,t+dur);g.gain.setValueAtTime(vol,t);g.gain.exponentialRampToValueAtTime(0.001,t+dur);o.start(t);o.stop(t+dur+0.05);}catch(_){}};
+const soundEngine={
+  key:     ()=>_tone([1200+Math.random()*600],{type:'sine',vol:0.13,gap:0,dur:0.035}),
+  typeChar:()=>_tone([900+Math.random()*300], {type:'sine',vol:0.026,gap:0,dur:0.032}),
+  compose: ()=>{_tone([800],{type:'sine',vol:0.055,gap:0,dur:0.04});setTimeout(()=>_tone([1050],{type:'sine',vol:0.04,gap:0,dur:0.06}),35);},
+  del:     ()=>_tone([320],{type:'sine',vol:0.04,gap:0,dur:0.022}),
+  enter:   ()=>_tone([480],{type:'sine',vol:0.04,gap:0,dur:0.03}),
+  paraOn:  ()=>{_tone([440],{type:'sine',vol:0.06,gap:0,dur:0.06});setTimeout(()=>_tone([660],{type:'sine',vol:0.06,gap:0,dur:0.08}),65);},
+  paraOff: ()=>{_tone([660],{type:'sine',vol:0.06,gap:0,dur:0.06});setTimeout(()=>_tone([440],{type:'sine',vol:0.055,gap:0,dur:0.08}),65);},
+  expand:  ()=>{_tone([330],{type:'sine',vol:0.055,gap:0,dur:0.05});setTimeout(()=>_tone([415],{type:'sine',vol:0.05,gap:0,dur:0.05}),55);setTimeout(()=>_tone([523],{type:'sine',vol:0.06,gap:0,dur:0.09}),110);},
+  collapse:()=>{_tone([523],{type:'sine',vol:0.055,gap:0,dur:0.05});setTimeout(()=>_tone([330],{type:'sine',vol:0.055,gap:0,dur:0.09}),60);},
+  jump:    ()=>{_sweep(400,900,0.12,0.06);setTimeout(()=>_tone([1100],{type:'sine',vol:0.045,gap:0,dur:0.07}),110);},
+  complete:()=>{_tone([523,659,784,1047],{type:'sine',vol:0.22,gap:65,dur:0.22});setTimeout(()=>_tone([1047,1319,1568],{type:'sine',vol:0.18,gap:90,dur:0.32}),290);},
+};
+
+// ── ImagePanel ─────────────────────────────────────────────────
+function ImagePanel({src,label}){
+  const [scale,setScale]=useState(1);const [off,setOff]=useState({x:0,y:0});const touchRef=useRef(null);const lastTapRef=useRef(0);
+  useEffect(()=>{setScale(1);setOff({x:0,y:0});},[src]);
+  const dist=t=>{const dx=t[0].clientX-t[1].clientX,dy=t[0].clientY-t[1].clientY;return Math.sqrt(dx*dx+dy*dy);};
+  const onTS=e=>{if(e.touches.length===2){e.preventDefault();touchRef.current={type:'pinch',dist:dist(e.touches),scale,off};}else if(e.touches.length===1){const now=Date.now();if(now-lastTapRef.current<280){setScale(1);setOff({x:0,y:0});lastTapRef.current=0;return;}lastTapRef.current=now;touchRef.current={type:'pan',x:e.touches[0].clientX,y:e.touches[0].clientY,off};}};
+  const onTM=e=>{if(!touchRef.current)return;e.preventDefault();if(e.touches.length===2&&touchRef.current.type==='pinch'){setScale(Math.max(0.5,Math.min(6,touchRef.current.scale*(dist(e.touches)/touchRef.current.dist))));}else if(e.touches.length===1&&touchRef.current.type==='pan'){setOff({x:touchRef.current.off.x+(e.touches[0].clientX-touchRef.current.x),y:touchRef.current.off.y+(e.touches[0].clientY-touchRef.current.y)});}};
+  return(<div style={{width:'100%',height:'100%',overflow:'hidden',background:'#161b22',display:'flex',alignItems:'center',justifyContent:'center',touchAction:'none'}} onTouchStart={onTS} onTouchMove={onTM} onTouchEnd={()=>{touchRef.current=null;}}>
+    {src?<img src={src} alt={label||''} draggable={false} style={{transform:`translate(${off.x}px,${off.y}px) scale(${scale})`,transformOrigin:'center',maxWidth:'100%',maxHeight:'100%',objectFit:'contain',userSelect:'none',pointerEvents:'none',display:'block'}}/>
+    :<div style={{fontFamily:'monospace',fontSize:'11px',color:'#484f58',textAlign:'center',padding:'20px'}}>＋ボタンで画像を追加</div>}
+  </div>);
+}
+
+// ── AutoTA ─────────────────────────────────────────────────────
+function AutoTA({value,onChange,onKeyDown,onCompositionStart,onCompositionEnd,style,placeholder,inputRef}){
+  const ownRef=useRef(null);const ref=inputRef||ownRef;const focused=useRef(false);
+  const resize=()=>{if(ref.current){ref.current.style.height='auto';ref.current.style.height=ref.current.scrollHeight+'px';}};
+  useEffect(()=>{if(ref.current){ref.current.value=value;resize();}},[]);// eslint-disable-line
+  useEffect(()=>{if(ref.current&&!focused.current){ref.current.value=value;resize();}},[value]);
+  return(<textarea ref={ref} onFocus={()=>{focused.current=true;}} onBlur={()=>{focused.current=false;}} onChange={e=>{resize();onChange(e);}} onKeyDown={onKeyDown} onCompositionStart={onCompositionStart} onCompositionEnd={onCompositionEnd} placeholder={placeholder} style={{display:'block',width:'100%',resize:'none',overflow:'hidden',border:'none',outline:'none',background:'transparent',...style}}/>);
+}
+
+// ── Main App ───────────────────────────────────────────────────
+function WritingApp(){
+  const STORAGE_KEY="writing_app_v1";
+  const IMG_KEY="writing_app_images_v1";
+
+  const [text,setText]=useState("");
+  const [showPara,setShowPara]=useState(false);
+  const [showOverview,setShowOverview]=useState(false);
+  const [expandedParas,setExpandedParas]=useState(new Set());
+  const [docTitle,setDocTitle]=useState("無題");
+  const [fontSize,setFontSize]=useState(()=>{try{const s=localStorage.getItem('writing_app_fontsize');return s?parseInt(s):15;}catch(e){return 15;}});
+  const changeFontSize=d=>setFontSize(v=>{const n=Math.max(12,Math.min(24,v+d));try{localStorage.setItem('writing_app_fontsize',n);}catch(e){}return n;});
+  const [soundEnabled,setSoundEnabled]=useState(()=>{try{return localStorage.getItem('writing_app_sound')!=='off';}catch(e){return true;}});
+  const soundEnabledRef=useRef(soundEnabled);
+  useEffect(()=>{soundEnabledRef.current=soundEnabled;},[soundEnabled]);
+  const sound=name=>{if(soundEnabledRef.current)try{soundEngine[name]();}catch(e){}};
+
+  // Typewriter state
+  const [typingBi,setTypingBi]=useState(null);
+  const [typingCount,setTypingCount]=useState(0);
+  const [typingSentIdx,setTypingSentIdx]=useState(0);
+  const [typingWaiting,setTypingWaiting]=useState(false);
+  const [typingDone,setTypingDone]=useState(null);
+  const [typingComplete,setTypingComplete]=useState(null);
+  const typingIntervalRef=useRef(null);
+  const typingAllSentsRef=useRef([]);
+  const scheduledNodesRef=useRef([]);
+  const typingWaitingRef=useRef(false);
+  const typingBiRef=useRef(null);
+  const typingDoneRef=useRef(null);
+  const typingCompleteRef=useRef(null);
+  useEffect(()=>{typingWaitingRef.current=typingWaiting;},[typingWaiting]);
+  useEffect(()=>{typingBiRef.current=typingBi;},[typingBi]);
+  useEffect(()=>{typingDoneRef.current=typingDone;},[typingDone]);
+  useEffect(()=>{typingCompleteRef.current=typingComplete;},[typingComplete]);
+
+  // Image state
+  const [showImages,setShowImages]=useState(false);
+  const [images,setImages]=useState([]);
+  const [imgIdx,setImgIdx]=useState(0);
+  const [imgPanelH,setImgPanelH]=useState(260);
+  const [editingLabel,setEditingLabel]=useState(false);
+  const [labelVal,setLabelVal]=useState("");
+  const fileInputRef=useRef(null);
+
+  // Log state
+  const [showLog,setShowLog]=useState(false);
+  const [showRestore,setShowRestore]=useState(false);
+  const [diffLog,setDiffLog]=useState([]);
+  const [keystrokeLog,setKeystrokeLog]=useState([]);
+  const [isRecording,setIsRecording]=useState(false);
+  const [sessionStart,setSessionStart]=useState(null);
+  const [elapsed,setElapsed]=useState(0);
+  const [isReplaying,setIsReplaying]=useState(false);
+  const [replayText,setReplayText]=useState("");
+  const [replayProgress,setReplayProgress]=useState(0);
+  const [replaySpeed,setReplaySpeed]=useState(20);
+  const [restored,setRestored]=useState(false);
+  const [copied,setCopied]=useState(false);
+  const [restoreInput,setRestoreInput]=useState("");
+  const [restoreError,setRestoreError]=useState("");
+  const [highlightedParaBi,setHighlightedParaBi]=useState(null);
+  const [jumpFlash,setJumpFlash]=useState(null);
+  const [targetParaBi,setTargetParaBi]=useState(null);
+  const [paraFlags,setParaFlags]=useState(()=>{try{const s=localStorage.getItem('writing_app_paraflags_v1');return s?JSON.parse(s):{};}catch(e){return{};}});
+
+  // Search / Replace
+  const [showSearch,setShowSearch]=useState(false);
+  const [searchTerm,setSearchTerm]=useState('');
+  const [replaceTerm,setReplaceTerm]=useState('');
+  const [searchIdx,setSearchIdx]=useState(0);
+  const [searchCase,setSearchCase]=useState(false);
+  const searchInputRef=useRef(null);
+  const textMirrorRef=useRef(null);
+
+  // Undo / Redo
+  const undoStackRef=useRef([]);
+  const redoStackRef=useRef([]);
+  const undoTimerRef=useRef(null);
+  const lastSnapshotRef=useRef('');
+
+  const diffLogRef=useRef([]);const keystrokeLogRef=useRef([]);const isComposingRef=useRef(false);const isRecordingRef=useRef(false);const sessionStartRef=useRef(null);const initialTextRef=useRef("");const textRef=useRef("");const displayTextRef=useRef("");const timerRef=useRef(null);const replayAbortRef=useRef(false);
+  const textareaRef=useRef(null);const jumpOffsetRef=useRef(null);
+  const paraBlockRefs=useRef({});const lastActiveParaBiRef=useRef(null);
+  const showParaRef=useRef(false);const expandedParasRef=useRef(new Set());
+  const prevTextLenRef=useRef(0);
+
+  useEffect(()=>{showParaRef.current=showPara;},[showPara]);
+  useEffect(()=>{expandedParasRef.current=expandedParas;},[expandedParas]);
+
+  const blocks=useMemo(()=>parseToBlocks(text),[text]);
+  const blockColorIdx=useMemo(()=>{let idx=0;return blocks.map((b,i)=>{if(b.type==='heading'&&i>0)idx++;return idx;});},[blocks]);
+
+  // Search matches
+  const searchMatches=useMemo(()=>{
+    if(!searchTerm.trim())return[];
+    const t=searchCase?text:text.toLowerCase();
+    const q=searchCase?searchTerm:searchTerm.toLowerCase();
+    const res=[];let i=0;
+    while((i=t.indexOf(q,i))!==-1){res.push(i);i+=Math.max(1,q.length);}
+    return res;
+  },[text,searchTerm,searchCase]);
+
+  // Highlight content for mirror div
+  const highlightedContent=useMemo(()=>{
+    if(!showSearch||!searchTerm||!searchMatches.length)return null;
+    const parts=[];let last=0;const slen=searchTerm.length;
+    searchMatches.forEach((pos,i)=>{
+      if(pos>last)parts.push(text.slice(last,pos));
+      const cur=i===searchIdx;
+      parts.push(<mark key={i} style={{background:cur?'rgba(255,200,0,0.5)':'rgba(88,166,255,0.28)',borderRadius:'2px',color:'inherit'}}>{text.slice(pos,pos+slen)}</mark>);
+      last=pos+slen;
+    });
+    if(last<text.length)parts.push(text.slice(last));
+    return parts;
+  },[showSearch,text,searchMatches,searchIdx,searchTerm]);
+
+  // Sync mirror scroll with textarea
+  useEffect(()=>{
+    if(!showSearch)return;
+    const ta=textareaRef.current,m=textMirrorRef.current;
+    if(!ta||!m)return;
+    const sync=()=>{m.scrollTop=ta.scrollTop;};
+    ta.addEventListener('scroll',sync,{passive:true});
+    sync();
+    return()=>ta.removeEventListener('scroll',sync);
+  },[showSearch,searchTerm]);
+
+  // Load state
+  useEffect(()=>{try{const s=localStorage.getItem(STORAGE_KEY);if(!s)return;const d=JSON.parse(s);if(d.text){setText(d.text);textRef.current=d.text;displayTextRef.current=d.text;lastSnapshotRef.current=d.text;}if(d.title)setDocTitle(d.title);if(d.diffLog?.length){diffLogRef.current=d.diffLog;setDiffLog(d.diffLog);}if(d.keystrokeLog?.length){keystrokeLogRef.current=d.keystrokeLog;setKeystrokeLog(d.keystrokeLog);}if(d.sessionStart){sessionStartRef.current=d.sessionStart;setSessionStart(d.sessionStart);}if(d.initialText!==undefined)initialTextRef.current=d.initialText;setRestored(true);}catch(e){}},[]); // eslint-disable-line
+  useEffect(()=>{try{const s=localStorage.getItem(IMG_KEY);if(s){const imgs=JSON.parse(s);if(imgs.length>0)setImages(imgs);}}catch(e){}},[]); // eslint-disable-line
+  const save=()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({sessionStart:sessionStartRef.current,initialText:initialTextRef.current,text:displayTextRef.current,title:docTitle,diffLog:diffLogRef.current,keystrokeLog:keystrokeLogRef.current}));}catch(e){}};
+  const saveImages=imgs=>{try{localStorage.setItem(IMG_KEY,JSON.stringify(imgs));}catch(e){alert("画像の保存に失敗しました。");}};
+  const saveFlags=f=>{try{localStorage.setItem('writing_app_paraflags_v1',JSON.stringify(f));}catch(e){}};
+  const cycleFlag=(t,e)=>{e.stopPropagation();const k=flagKey(t);setParaFlags(prev=>{const cur=prev[k]||0;const next=(cur+1)%3;const u={...prev,[k]:next};saveFlags(u);return u;});};
+
+  // ── Undo / Redo ────────────────────────────────────────────────
+  const pushSnapshot=(t)=>{
+    if(t!==lastSnapshotRef.current){
+      undoStackRef.current.push(lastSnapshotRef.current);
+      if(undoStackRef.current.length>300)undoStackRef.current.shift();
+      redoStackRef.current=[];
+      lastSnapshotRef.current=t;
+    }
+  };
+  const takeSnapshot=(t)=>{
+    clearTimeout(undoTimerRef.current);
+    undoTimerRef.current=setTimeout(()=>pushSnapshot(t),150);
+  };
+  const applyUndoText=(newText)=>{
+    const diff=computeDiff(textRef.current,newText);
+    if(diff.del>0||diff.ins.length>0){
+      const entry={t:Date.now(),...diff};
+      diffLogRef.current.push(entry);
+      setDiffLog(prev=>[...prev.slice(-299),entry]);
+    }
+    textRef.current=newText;displayTextRef.current=newText;
+    setText(newText);
+    setTimeout(()=>save(),50);
+  };
+  const applyUndo=()=>{
+    if(!undoStackRef.current.length)return;
+    clearTimeout(undoTimerRef.current);
+    redoStackRef.current.push(textRef.current);
+    const prev=undoStackRef.current.pop();
+    lastSnapshotRef.current=prev;
+    applyUndoText(prev);
+  };
+  const applyRedo=()=>{
+    if(!redoStackRef.current.length)return;
+    clearTimeout(undoTimerRef.current);
+    undoStackRef.current.push(textRef.current);
+    const next=redoStackRef.current.pop();
+    lastSnapshotRef.current=next;
+    applyUndoText(next);
+  };
+
+  // ── Search helpers ─────────────────────────────────────────────
+  const scrollToMatch=(ni,matches)=>{
+    const ta=textareaRef.current;if(!ta||!matches.length)return;
+    const pos=matches[ni];
+    ta.setSelectionRange(pos,pos+searchTerm.length);
+    const top=measureCursorTop(ta,pos);
+    ta.scrollTop=Math.max(0,top-ta.clientHeight/2);
+  };
+  const findNext=()=>{if(!searchMatches.length)return;const ni=(searchIdx+1)%searchMatches.length;setSearchIdx(ni);scrollToMatch(ni,searchMatches);};
+  const findPrev=()=>{if(!searchMatches.length)return;const ni=(searchIdx-1+searchMatches.length)%searchMatches.length;setSearchIdx(ni);scrollToMatch(ni,searchMatches);};
+  const replaceOne=()=>{
+    if(!searchMatches.length||!searchTerm)return;
+    const pos=searchMatches[searchIdx];
+    const newText=text.slice(0,pos)+replaceTerm+text.slice(pos+searchTerm.length);
+    applyTextUpdate(newText);
+    setTimeout(()=>scrollToMatch(Math.min(searchIdx,searchMatches.length-2),searchMatches),50);
+  };
+  const replaceAll=()=>{
+    if(!searchTerm||!searchMatches.length)return;
+    let newText=text;
+    const slen=searchTerm.length;
+    const q=searchCase?searchTerm:searchTerm.toLowerCase();
+    let result='';let i=0;
+    while(i<newText.length){
+      const haystack=searchCase?newText.slice(i):newText.slice(i).toLowerCase();
+      const found=haystack.indexOf(q);
+      if(found===-1){result+=newText.slice(i);break;}
+      result+=newText.slice(i,i+found)+replaceTerm;
+      i+=found+slen;
+    }
+    applyTextUpdate(result);
+    setSearchTerm('');
+  };
+
+  // ── Typewriter ─────────────────────────────────────────────────
+  const cancelTypingSounds=()=>{
+    scheduledNodesRef.current.forEach(o=>{try{o.stop(0);}catch(e){}});
+    scheduledNodesRef.current=[];
+  };
+  const stopTypewriter=()=>{
+    if(typingIntervalRef.current){clearInterval(typingIntervalRef.current);typingIntervalRef.current=null;}
+    cancelTypingSounds();
+    setTypingBi(null);setTypingWaiting(false);setTypingDone(null);
+    typingBiRef.current=null;typingWaitingRef.current=false;typingDoneRef.current=null;
+  };
+  const doRevealSentence=(sentIdx,curBi)=>{
+    const txt=typingAllSentsRef.current[sentIdx]||'';
+    if(!txt.length){setTypingWaiting(true);typingWaitingRef.current=true;return;}
+    const total=txt.length,MS=25;
+    cancelTypingSounds();
+    let L=0;
+    if(soundEnabledRef.current){
+      try{
+        const c=_getCtx();
+        L=Math.min(Math.round(((c.baseLatency||0)+(c.outputLatency||0))*1000),60);
+        const t0=c.currentTime;
+        const nodes=[];
+        for(let i=1;i<=total;i++){
+          const t=t0+i*MS/1000;
+          const freq=900+Math.random()*300;
+          const o=c.createOscillator(),g=c.createGain();
+          o.connect(g);g.connect(c.destination);
+          o.type='sine';o.frequency.value=freq;
+          g.gain.setValueAtTime(0.026,t);
+          g.gain.exponentialRampToValueAtTime(0.001,t+0.028);
+          o.start(t);o.stop(t+0.033);
+          nodes.push(o);
+        }
+        scheduledNodesRef.current=nodes;
+      }catch(e){}
+    }
+    const startInterval=()=>{
+      setTypingBi(curBi);
+      let count=0;
+      typingIntervalRef.current=setInterval(()=>{
+        count=Math.min(total,count+1);
+        setTypingCount(count);
+        if(count>=total){
+          clearInterval(typingIntervalRef.current);typingIntervalRef.current=null;
+          scheduledNodesRef.current=[];
+          const isLast=sentIdx===typingAllSentsRef.current.length-1;
+          if(isLast){
+            setTypingBi(null);typingBiRef.current=null;
+            setTypingWaiting(false);typingWaitingRef.current=false;
+            setTypingDone(curBi);typingDoneRef.current=curBi;
+          } else {
+            setTypingWaiting(true);typingWaitingRef.current=true;
+          }
+        }
+      },MS);
+    };
+    if(L>0)setTimeout(startInterval,L);else startInterval();
+  };
+  const startTypewriter=(bi,allSents)=>{
+    if(typingIntervalRef.current)clearInterval(typingIntervalRef.current);
+    cancelTypingSounds();
+    typingAllSentsRef.current=allSents;
+    typingBiRef.current=bi;
+    setTypingBi(null);
+    setTypingSentIdx(0);setTypingCount(0);setTypingWaiting(false);typingWaitingRef.current=false;
+    setTypingDone(null);typingDoneRef.current=null;
+    if(!allSents.length)return;
+    setTimeout(()=>doRevealSentence(0,bi),30);
+  };
+  const advanceTypewriter=()=>{
+    if(!typingWaitingRef.current)return;
+    setTypingSentIdx(prev=>{
+      const ni=prev+1;
+      const curBi=typingBiRef.current;
+      if(ni>=typingAllSentsRef.current.length){
+        setTypingBi(null);setTypingWaiting(false);
+        typingBiRef.current=null;typingWaitingRef.current=false;
+        return prev;
+      }
+      setTypingCount(0);setTypingWaiting(false);typingWaitingRef.current=false;
+      setTimeout(()=>doRevealSentence(ni,curBi),30);
+      return ni;
+    });
+  };
+
+  // ── Para view scroll ───────────────────────────────────────────
+  useEffect(()=>{
+    if(showPara&&targetParaBi!==null){
+      setTimeout(()=>{
+        const el=paraBlockRefs.current[targetParaBi];
+        if(el)el.scrollIntoView({block:'center',behavior:'smooth'});
+        setHighlightedParaBi(targetParaBi);
+        setTimeout(()=>setHighlightedParaBi(null),1400);
+      },60);
+    }
+  },[showPara,targetParaBi]);
+
+  // ── Plain jump ─────────────────────────────────────────────────
+  useEffect(()=>{
+    if(!showPara&&jumpOffsetRef.current!==null){
+      const offset=jumpOffsetRef.current;jumpOffsetRef.current=null;
+      setTimeout(()=>{
+        const ta=textareaRef.current;if(!ta)return;
+        ta.focus();
+        const cb=parseToBlocks(ta.value);let targetBlock=null,pNum=null,pc=0;
+        for(const b of cb){if(b.type==='paragraph')pc++;if(b.start<=offset&&offset<=b.start+(b.text||'').length){targetBlock=b;pNum=pc;break;}}
+        if(targetBlock){
+          ta.setSelectionRange(targetBlock.start,targetBlock.start+(targetBlock.text||'').length);
+          const curTop=measureCursorTop(ta,targetBlock.start);
+          ta.scrollTop=Math.max(0,curTop-ta.clientHeight/2);
+          setTimeout(()=>{if(document.activeElement===ta)ta.setSelectionRange(targetBlock.start,targetBlock.start);},1200);
+        } else {
+          ta.setSelectionRange(offset,offset);
+          const curTop=measureCursorTop(ta,offset);
+          ta.scrollTop=Math.max(0,curTop-ta.clientHeight/2);
+        }
+        if(pNum!==null){setJumpFlash(pNum);setTimeout(()=>setJumpFlash(null),1800);}
+      },80);
+    }
+  },[showPara]);
+
+  const jumpToBlock=start=>{jumpOffsetRef.current=start;setShowPara(false);setShowOverview(false);setExpandedParas(new Set());stopTypewriter();};
+  const jumpToParaFromOverview=bi=>{setShowOverview(false);setShowPara(true);lastActiveParaBiRef.current=bi;setExpandedParas(new Set([bi]));setTargetParaBi(bi);const b=blocks[bi];if(b?.sentences?.length>0)setTimeout(()=>startTypewriter(bi,b.sentences),80);sound('expand');};
+
+  // ── Resize ─────────────────────────────────────────────────────
+  useEffect(()=>{
+    let timer=null;
+    const onResize=()=>{clearTimeout(timer);timer=setTimeout(()=>{if(showParaRef.current){const exp=expandedParasRef.current;const bi=exp.size>0?Math.min(...exp):lastActiveParaBiRef.current;if(bi!==null){const el=paraBlockRefs.current[bi];if(el)el.scrollIntoView({block:'center',behavior:'instant'});}}else{const ta=textareaRef.current;if(!ta)return;const offset=ta.selectionStart??0;ta.scrollTop=ta.scrollHeight*(offset/Math.max(1,ta.value.length))-ta.clientHeight/2;}},120);};
+    window.addEventListener('resize',onResize);return()=>{window.removeEventListener('resize',onResize);clearTimeout(timer);};
+  },[]);
+
+  // ── Global keyboard shortcuts ──────────────────────────────────
+  useEffect(()=>{
+    const onGlobal=e=>{
+      // Undo / Redo
+      if((e.metaKey||e.ctrlKey)&&e.key==='z'&&!e.shiftKey){e.preventDefault();applyUndo();return;}
+      if((e.metaKey||e.ctrlKey)&&((e.shiftKey&&e.key==='z')||e.key==='y')){e.preventDefault();applyRedo();return;}
+      // Search
+      if((e.metaKey||e.ctrlKey)&&e.key==='f'){e.preventDefault();setShowSearch(v=>{if(!v)setTimeout(()=>searchInputRef.current?.focus(),50);return!v;});return;}
+      if(e.key==='Escape'&&showSearch){setShowSearch(false);return;}
+    };
+    document.addEventListener('keydown',onGlobal);
+    return()=>document.removeEventListener('keydown',onGlobal);
+  },[showSearch]); // eslint-disable-line
+
+  // ── Enter key: typewriter advance / animation / next para ──────
+  const goToNextParagraph=()=>{
+    const currentBi=lastActiveParaBiRef.current;if(currentBi===null)return;
+    const freshBlocks=parseToBlocks(displayTextRef.current);
+    let nextBi=null;
+    for(let i=currentBi+1;i<freshBlocks.length;i++){if(freshBlocks[i].type==='paragraph'){nextBi=i;break;}}
+    if(nextBi!==null){
+      lastActiveParaBiRef.current=nextBi;
+      setExpandedParas(prev=>{const s=new Set(prev);s.delete(currentBi);s.add(nextBi);return s;});
+      sound('expand');
+      const b=freshBlocks[nextBi];
+      if(b.sentences&&b.sentences.length>0){setTimeout(()=>startTypewriter(nextBi,b.sentences),50);}
+      setTimeout(()=>{const el=paraBlockRefs.current[nextBi];if(el)el.scrollIntoView({block:'center',behavior:'smooth'});},60);
+    }
+  };
+  useEffect(()=>{
+    const onKey=e=>{
+      if(e.key!=='Enter')return;
+      if(typingBiRef.current!==null){
+        if(typingWaitingRef.current){e.preventDefault();advanceTypewriter();}
+        return;
+      }
+      if(typingDoneRef.current!==null){
+        e.preventDefault();
+        const bi=typingDoneRef.current;
+        setTypingDone(null);typingDoneRef.current=null;
+        sound('complete');
+        setTypingComplete(bi);typingCompleteRef.current=bi;
+        setTimeout(()=>{setTypingComplete(null);typingCompleteRef.current=null;},1200);
+        return;
+      }
+      if(showParaRef.current){e.preventDefault();goToNextParagraph();}
+    };
+    document.addEventListener('keydown',onKey);
+    return()=>document.removeEventListener('keydown',onKey);
+  },[]); // eslint-disable-line
+
+  // ── Images ─────────────────────────────────────────────────────
+  const handleImageUpload=async e=>{const file=e.target.files?.[0];if(!file)return;const data=await compressImage(file);const label=file.name.replace(/\.[^.]+$/,'');const newImgs=[...images,{label,data}];setImages(newImgs);setImgIdx(newImgs.length-1);saveImages(newImgs);e.target.value='';};
+  const deleteImage=()=>{if(!images.length)return;const newImgs=images.filter((_,i)=>i!==imgIdx);setImages(newImgs);setImgIdx(Math.min(imgIdx,newImgs.length-1));saveImages(newImgs);};
+  const saveLabelEdit=()=>{const newImgs=images.map((img,i)=>i===imgIdx?{...img,label:labelVal}:img);setImages(newImgs);setEditingLabel(false);saveImages(newImgs);};
+  const startDividerDrag=clientY=>{const startH=imgPanelH,startY=clientY;const onMove=y=>setImgPanelH(Math.max(100,Math.min(520,startH+(y-startY))));const onMM=e=>onMove(e.clientY);const onTM=e=>onMove(e.touches[0].clientY);const cleanup=()=>{window.removeEventListener('mousemove',onMM);window.removeEventListener('mouseup',cleanup);window.removeEventListener('touchmove',onTM);window.removeEventListener('touchend',cleanup);};window.addEventListener('mousemove',onMM);window.addEventListener('mouseup',cleanup);window.addEventListener('touchmove',onTM,{passive:true});window.addEventListener('touchend',cleanup);};
+
+  // ── Timer/Recording ────────────────────────────────────────────
+  useEffect(()=>{if(isRecording&&sessionStart)timerRef.current=setInterval(()=>setElapsed(Date.now()-sessionStart),500);return()=>clearInterval(timerRef.current);},[isRecording,sessionStart]);
+  const startRecording=()=>{const now=Date.now();isRecordingRef.current=true;sessionStartRef.current=now;setSessionStart(now);setIsRecording(true);setElapsed(0);setRestored(false);if(diffLogRef.current.length===0)initialTextRef.current=textRef.current;displayTextRef.current=textRef.current;};
+  const stopRecording=()=>{isRecordingRef.current=false;setIsRecording(false);clearInterval(timerRef.current);save();};
+  const newSession=()=>{if(!window.confirm("現在のセッションを破棄して新しいセッションを開始しますか？"))return;localStorage.removeItem(STORAGE_KEY);isRecordingRef.current=false;sessionStartRef.current=null;initialTextRef.current="";diffLogRef.current=[];keystrokeLogRef.current=[];setText("");textRef.current="";displayTextRef.current="";lastSnapshotRef.current="";undoStackRef.current=[];redoStackRef.current=[];setSessionStart(null);setIsRecording(false);setElapsed(0);setDiffLog([]);setKeystrokeLog([]);setRestored(false);clearInterval(timerRef.current);};
+
+  const applyTextUpdate=newText=>{
+    if(!isRecordingRef.current)startRecording();
+    takeSnapshot(textRef.current);
+    displayTextRef.current=newText;
+    if(!isComposingRef.current){
+      const diff=computeDiff(textRef.current,newText);
+      if(diff.del>0||diff.ins.length>0){const entry={t:Date.now(),...diff};diffLogRef.current.push(entry);setDiffLog(prev=>[...prev.slice(-299),entry]);}
+      textRef.current=newText;
+    }
+    setText(newText);save();
+  };
+  const handleKeyDown=e=>{
+    if(!isRecordingRef.current)startRecording();
+    if(isComposingRef.current)return;
+    const now=Date.now();let entry=null;
+    if(e.key==="Backspace")entry={t:now,type:"delete",key:"Backspace"};
+    else if(e.key==="Delete")entry={t:now,type:"delete",key:"Delete"};
+    else if(e.key==="Enter"){entry={t:now,type:"insert",char:"↵"};pushSnapshot(textRef.current);}
+    else if(e.key.length===1&&!e.ctrlKey&&!e.metaKey)entry={t:now,type:"insert",char:e.key};
+    if(entry){keystrokeLogRef.current.push(entry);setKeystrokeLog(prev=>[...prev.slice(-299),entry]);if(e.key==='Backspace'||e.key==='Delete')sound('del');else if(e.key==='Enter')sound('enter');}
+  };
+  const handleCompositionStart=()=>{if(!isRecordingRef.current)startRecording();isComposingRef.current=true;};
+  const handleCompositionEnd=e=>{
+    isComposingRef.current=false;
+    pushSnapshot(displayTextRef.current);
+    if(e.data&&isRecordingRef.current){const entry={t:Date.now(),type:"compose",text:e.data};keystrokeLogRef.current.push(entry);setKeystrokeLog(prev=>[...prev.slice(-299),entry]);sound('compose');}
+  };
+
+  // ── Replay ─────────────────────────────────────────────────────
+  const startReplay=async()=>{const log=diffLogRef.current;if(log.length<2)return;replayAbortRef.current=false;setIsReplaying(true);setReplayProgress(0);let doc=initialTextRef.current;setReplayText(doc);for(let i=0;i<log.length;i++){if(replayAbortRef.current)break;doc=applyDiff(doc,log[i]);setReplayText(doc);setReplayProgress(Math.round(i/(log.length-1)*100));if(i<log.length-1)await sleep(Math.max(20,Math.min((log[i+1].t-log[i].t)/replaySpeed,2000)));}setReplayProgress(100);setIsReplaying(false);};
+  const stopReplay=()=>{replayAbortRef.current=true;};
+  const exportJSON=async()=>{if(!sessionStartRef.current)return;const now=Date.now(),start=sessionStartRef.current;const data={session_id:`ws_${start}`,start_time:new Date(start).toISOString(),end_time:new Date(now).toISOString(),duration_seconds:Math.round((now-start)/1000),title:docTitle,initial_text:initialTextRef.current,stats:{final_chars:displayTextRef.current.length,final_words:wc(displayTextRef.current),total_events:diffLogRef.current.length},diff_log:diffLogRef.current.map(e=>({timestamp:new Date(e.t).toISOString(),elapsed_ms:e.t-start,pos:e.pos,del:e.del,ins:e.ins})),keystroke_log:keystrokeLogRef.current.map(e=>({timestamp:new Date(e.t).toISOString(),elapsed_ms:e.t-start,type:e.type,...(e.char!==undefined&&{char:e.char}),...(e.text!==undefined&&{text:e.text}),...(e.key!==undefined&&{key:e.key})})),final_text:displayTextRef.current};try{await navigator.clipboard.writeText(JSON.stringify(data,null,2));setCopied(true);setTimeout(()=>setCopied(false),2000);}catch(e){}};
+  const parseRestoreJSON=()=>{try{const d=JSON.parse(restoreInput);if(!d.diff_log&&!d.final_text)throw new Error("diff_logまたはfinal_textが見つかりません");setRestoreError("");return d;}catch(e){setRestoreError("解析失敗: "+e.message);return null;}};
+  const loadState=d=>{const rl=(d.diff_log||[]).map(e=>({t:new Date(e.timestamp).getTime(),pos:e.pos,del:e.del,ins:e.ins}));const kl=(d.keystroke_log||[]).map(e=>({t:new Date(e.timestamp).getTime(),type:e.type,char:e.char,text:e.text,key:e.key}));initialTextRef.current=d.initial_text||"";diffLogRef.current=rl;keystrokeLogRef.current=kl;if(d.start_time)sessionStartRef.current=new Date(d.start_time).getTime();if(d.title)setDocTitle(d.title);const ft=d.final_text||"";setText(ft);textRef.current=ft;displayTextRef.current=ft;lastSnapshotRef.current=ft;setDiffLog(rl);setKeystrokeLog(kl);save();};
+  const restoreInstant=()=>{const d=parseRestoreJSON();if(!d)return;loadState(d);setShowRestore(false);setRestoreInput("");};
+  const restoreTimelapse=async()=>{const d=parseRestoreJSON();if(!d)return;const log=d.diff_log;if(!log?.length){setRestoreError("diff_logが空です");return;}setShowRestore(false);setRestoreInput("");replayAbortRef.current=false;setIsReplaying(true);setReplayProgress(0);let doc=d.initial_text||"";setReplayText(doc);for(let i=0;i<log.length;i++){if(replayAbortRef.current)break;doc=applyDiff(doc,log[i]);setReplayText(doc);setReplayProgress(Math.round(i/(log.length-1)*100));if(i<log.length-1)await sleep(Math.max(20,Math.min((log[i+1].elapsed_ms-log[i].elapsed_ms)/replaySpeed,2000)));}setReplayProgress(100);setIsReplaying(false);loadState(d);};
+
+  const chart=useMemo(()=>{const log=diffLogRef.current;if(log.length<5)return null;const t0=log[0].t,dur=log[log.length-1].t-t0;if(!dur)return null;const step=Math.max(1,Math.floor(log.length/60));let len=initialTextRef.current.length;const pts=[];for(let i=0;i<log.length;i++){len=len-log[i].del+log[i].ins.length;if(i%step===0)pts.push({x:((log[i].t-t0)/dur)*280,len});}const maxLen=Math.max(...pts.map(p=>p.len),1);return{pts:pts.map(p=>({x:p.x,y:48-(p.len/maxLen)*44})),maxLen};},[diffLog]);
+
+  // ── Para expand/collapse ───────────────────────────────────────
+  const toggleParaExpand=bi=>{
+    lastActiveParaBiRef.current=bi;
+    setExpandedParas(prev=>{
+      const s=new Set(prev);
+      if(s.has(bi)){
+        s.delete(bi);sound('collapse');stopTypewriter();
+      } else if(s.size>0){
+        s.clear();sound('collapse');stopTypewriter();
+      } else {
+        s.add(bi);sound('expand');
+        const b=blocks[bi];
+        if(b?.type==='paragraph'&&b.sentences.length>0){setTimeout(()=>startTypewriter(bi,b.sentences),50);}
+      }
+      return s;
+    });
+  };
+
+  // ── Styles ─────────────────────────────────────────────────────
+  const S={
+    app:{background:"#0d1117",height:"100vh",display:"flex",flexDirection:"column",fontFamily:"-apple-system,system-ui,sans-serif",color:"#c9d1d9",overflow:"hidden"},
+    header:{display:"flex",alignItems:"center",gap:"6px",padding:"0 12px",height:"44px",background:"#0d1117",borderBottom:"1px solid #21262d",flexShrink:0},
+    titleInput:{flex:1,fontSize:"13px",color:"#8b949e",border:"none",background:"none",outline:"none",fontFamily:"inherit"},
+    paraBtn:a=>({padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${a?"#58a6ff":"#30363d"}`,background:a?"#0d1f3c":"none",color:a?"#58a6ff":"#8b949e",fontFamily:"monospace"}),
+    overviewBtn:a=>({padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${a?"#bc8cff":"#30363d"}`,background:a?"#1a0f2e":"none",color:a?"#bc8cff":"#8b949e",fontFamily:"monospace"}),
+    imgBtn:a=>({padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${a?"#d29922":"#30363d"}`,background:a?"#1a1500":"none",color:a?"#d29922":"#8b949e",fontFamily:"monospace"}),
+    logBtn:{width:"28px",height:"28px",borderRadius:"4px",border:"1px solid #30363d",background:"none",color:"#8b949e",fontSize:"13px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"},
+    recDot:{width:6,height:6,borderRadius:"50%",background:"#f85149",animation:"recpulse 1.5s ease-in-out infinite",flexShrink:0,marginRight:2},
+    statusBar:{height:"26px",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",background:"#0d1117",borderTop:"1px solid #21262d",fontFamily:"monospace",fontSize:"10px",color:"#484f58",flexShrink:0},
+    editor:fs=>({flex:1,padding:"24px 20px",background:"transparent",color:"#e0dbd0",border:"none",outline:"none",resize:"none",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${fs}px`,lineHeight:"2",width:"100%",overflowY:"auto",position:"relative",zIndex:1}),
+    paraWrap:{flex:1,overflowY:"auto",padding:"20px 16px",background:"#0d1117"},
+    hs:fs=>({1:{fontSize:`${fs+3}px`,fontWeight:700,color:"#e0dbd0",padding:"8px 12px",borderBottom:"1px solid #21262d",marginBottom:"4px"},2:{fontSize:`${fs}px`,fontWeight:700,color:"#c9d1d9",padding:"6px 12px"},3:{fontSize:`${fs-1}px`,fontWeight:600,color:"#b0a898",padding:"5px 12px"},4:{fontSize:`${fs-2}px`,fontWeight:600,color:"#8b949e",padding:"4px 12px"},5:{fontSize:`${Math.max(11,fs-3)}px`,color:"#8b949e",padding:"4px 12px"}}),
+    btn:c=>({padding:"5px 10px",background:"transparent",color:c,border:`1px solid ${c}`,borderRadius:"4px",cursor:"pointer",fontFamily:"monospace",fontSize:"11px"}),
+    logPanel:{background:"#161b22",borderTop:"1px solid #21262d",padding:"12px 16px",display:"flex",flexDirection:"column",gap:"10px",flexShrink:0,maxHeight:"40vh",overflowY:"auto"},
+    restoreTA:{width:"100%",height:"70px",padding:"8px",background:"#0d1117",color:"#c9d1d9",border:"1px solid #30363d",borderRadius:"4px",fontFamily:"monospace",fontSize:"10px",resize:"vertical",outline:"none",boxSizing:"border-box"},
+  };
+
+  const POP_COLORS=['#ff7b72','#d29922','#3fb950','#58a6ff','#bc8cff','#f778ba'];
+  const cur=images[imgIdx];
+  const ss=fs=>({fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${Math.max(11,fs-2)}px`,lineHeight:"1.9",padding:"10px 16px"});
+  const midStyle=fs=>({...ss(fs),color:"#b0a898",padding:"4px 28px",borderLeft:"2px solid #2d333b",margin:"0 4px 0 12px"});
+
+  return(
+    <div style={S.app}>
+      <style>{`
+        @keyframes recpulse{0%,100%{opacity:1}50%{opacity:0.3}}
+        @keyframes paraflash{0%{box-shadow:inset 0 0 0 2px #58a6ff,0 0 12px rgba(88,166,255,0.4)}100%{box-shadow:none}}
+        @keyframes completeFlash{
+          0%{transform:scale(1);box-shadow:inset 0 0 0 2px #3fb950,0 0 24px rgba(63,185,80,0.0)}
+          15%{transform:scale(1.018);box-shadow:inset 0 0 0 2px #3fb950,0 0 32px rgba(63,185,80,0.7)}
+          40%{transform:scale(1.008);box-shadow:inset 0 0 0 2px #3fb950,0 0 20px rgba(63,185,80,0.4)}
+          100%{transform:scale(1);box-shadow:none}
+        }
+        @keyframes jumpfade{0%{opacity:1;transform:translateX(-50%) translateY(0)}70%{opacity:1}100%{opacity:0;transform:translateX(-50%) translateY(-6px)}}
+        textarea::placeholder{color:#484f58;}
+        input::placeholder{color:#484f58;}
+      `}</style>
+      <input ref={fileInputRef} type="file" accept="image/*" style={{display:'none'}} onChange={handleImageUpload}/>
+
+      {/* Header */}
+      <div style={S.header}>
+        <input value={docTitle} onChange={e=>{setDocTitle(e.target.value);setTimeout(save,300);}} style={S.titleInput}/>
+        <div style={{display:"flex",alignItems:"center",gap:"5px"}}>
+          <span style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58"}}>{text.length}字</span>
+          <button onClick={()=>changeFontSize(-1)} style={{...S.logBtn,fontSize:"11px",fontWeight:"bold"}}>A-</button>
+          <span style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",minWidth:"20px",textAlign:"center"}}>{fontSize}</span>
+          <button onClick={()=>changeFontSize(1)} style={{...S.logBtn,fontSize:"11px",fontWeight:"bold"}}>A+</button>
+          <button onClick={applyUndo} title="Undo (Cmd+Z)" style={{...S.logBtn,fontSize:"15px",opacity:undoStackRef.current.length?1:0.35}}>↩</button>
+          <button onClick={applyRedo} title="Redo" style={{...S.logBtn,fontSize:"15px",opacity:redoStackRef.current.length?1:0.35}}>↪</button>
+          <button style={S.paraBtn(showPara)} onClick={()=>{
+            setShowOverview(false);
+            if(!showPara){
+              const cursor=textareaRef.current?.selectionStart??0;
+              const cb=parseToBlocks(text);let tbi=0;
+              for(let i=0;i<cb.length;i++){if(cb[i].start<=cursor)tbi=i;else break;}
+              setTargetParaBi(tbi);lastActiveParaBiRef.current=tbi;
+              setExpandedParas(new Set());
+            } else {
+              const targetBi=lastActiveParaBiRef.current;
+              if(targetBi!==null&&blocks[targetBi])jumpOffsetRef.current=blocks[targetBi].start;
+              stopTypewriter();
+            }
+            if(showPara)setExpandedParas(new Set());
+            setShowPara(v=>!v);
+            if(!showPara)sound('paraOn');else sound('paraOff');
+          }}>📐</button>
+          <button style={S.overviewBtn(showOverview)} onClick={()=>{setShowOverview(v=>!v);setShowPara(false);if(!showOverview)sound('paraOn');else sound('paraOff');}}>≡</button>
+          <button style={S.imgBtn(showImages)} onClick={()=>setShowImages(v=>!v)}>🖼</button>
+          <button style={{...S.logBtn,border:showSearch?"1px solid #58a6ff":"1px solid #30363d",color:showSearch?"#58a6ff":"#8b949e"}} onClick={()=>setShowSearch(v=>{if(!v)setTimeout(()=>searchInputRef.current?.focus(),50);return!v;})}>🔍</button>
+          <button style={{...S.logBtn,color:soundEnabled?"#8b949e":"#484f58"}} onClick={()=>setSoundEnabled(v=>{const n=!v;try{localStorage.setItem('writing_app_sound',n?'on':'off');}catch(e){}if(n)setTimeout(_resetAudioCtx,50);return n;})}>{soundEnabled?"🔊":"🔇"}</button>
+          <button style={S.logBtn} onClick={()=>setShowLog(v=>!v)}>📋</button>
+          {isRecording&&<div style={S.recDot}/>}
+        </div>
+      </div>
+
+      {/* Search panel */}
+      {showSearch&&(
+        <div style={{background:"#161b22",borderBottom:"1px solid #21262d",padding:"8px 12px",flexShrink:0}}>
+          <div style={{display:"flex",gap:"6px",alignItems:"center",marginBottom:"5px"}}>
+            <span style={{fontFamily:"monospace",fontSize:"11px",color:"#58a6ff",flexShrink:0}}>🔍</span>
+            <input ref={searchInputRef} value={searchTerm}
+              onChange={e=>{setSearchTerm(e.target.value);setSearchIdx(0);}}
+              onKeyDown={e=>{if(e.key==='Enter'){e.shiftKey?findPrev():findNext();}if(e.key==='Escape')setShowSearch(false);}}
+              placeholder="検索..."
+              style={{flex:1,background:"#0d1117",color:"#c9d1d9",border:"1px solid #30363d",borderRadius:"4px",padding:"4px 8px",fontFamily:"monospace",fontSize:"12px",outline:"none"}}/>
+            <span style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",minWidth:"36px",textAlign:"center"}}>
+              {searchMatches.length?`${searchIdx+1}/${searchMatches.length}`:"0件"}
+            </span>
+            <button onClick={findPrev} style={{...S.logBtn,opacity:searchMatches.length?1:0.35}}>▲</button>
+            <button onClick={findNext} style={{...S.logBtn,opacity:searchMatches.length?1:0.35}}>▼</button>
+            <button onClick={()=>setSearchCase(v=>!v)} style={{...S.logBtn,border:`1px solid ${searchCase?"#58a6ff":"#30363d"}`,color:searchCase?"#58a6ff":"#8b949e",fontSize:"10px",fontWeight:"bold"}}>Aa</button>
+            <button onClick={()=>setShowSearch(false)} style={{...S.logBtn,color:"#8b949e"}}>✕</button>
+          </div>
+          <div style={{display:"flex",gap:"6px",alignItems:"center"}}>
+            <span style={{fontFamily:"monospace",fontSize:"11px",color:"#8b949e",flexShrink:0}}>↩</span>
+            <input value={replaceTerm} onChange={e=>setReplaceTerm(e.target.value)}
+              onKeyDown={e=>{if(e.key==='Enter')replaceOne();if(e.key==='Escape')setShowSearch(false);}}
+              placeholder="置換..."
+              style={{flex:1,background:"#0d1117",color:"#c9d1d9",border:"1px solid #30363d",borderRadius:"4px",padding:"4px 8px",fontFamily:"monospace",fontSize:"12px",outline:"none"}}/>
+            <button onClick={replaceOne} style={{...S.btn("#d29922"),padding:"3px 8px",opacity:searchMatches.length?1:0.35}}>1件</button>
+            <button onClick={replaceAll} style={{...S.btn("#d29922"),padding:"3px 8px",opacity:searchMatches.length?1:0.35}}>全て</button>
+          </div>
+        </div>
+      )}
+
+      {/* Log panel */}
+      {showLog&&(
+        <div style={S.logPanel}>
+          <div style={{display:"flex",gap:"8px",flexWrap:"wrap",alignItems:"center"}}>
+            {isRecording&&<button style={S.btn("#f85149")} onClick={stopRecording}>■ 停止</button>}
+            {!isRecording&&!isReplaying&&diffLogRef.current.length>=2&&(<><button style={S.btn("#d29922")} onClick={startReplay}>▶ タイムラプス</button><select value={replaySpeed} onChange={e=>setReplaySpeed(+e.target.value)} style={{background:"#21262d",color:"#c9d1d9",border:"1px solid #30363d",padding:"4px 8px",borderRadius:"4px",fontFamily:"monospace",fontSize:"11px"}}>{[5,10,20,50,100].map(s=><option key={s} value={s}>{s}×</option>)}</select></>)}
+            {isReplaying&&<button style={S.btn("#f85149")} onClick={stopReplay}>■ 停止</button>}
+            <button style={S.btn(copied?"#3fb950":"#8b949e")} onClick={exportJSON}>{copied?"✓ コピー済み":"⎘ JSONコピー"}</button>
+            <button style={S.btn("#3fb950")} onClick={()=>setShowRestore(v=>!v)}>{showRestore?"▲ 閉じる":"↩ 復元"}</button>
+            <button style={S.btn("#484f58")} onClick={newSession}>＋ 新セッション</button>
+          </div>
+          {showRestore&&(<div style={{background:"#0d1117",borderRadius:"4px",padding:"10px"}}><textarea style={S.restoreTA} value={restoreInput} onChange={e=>setRestoreInput(e.target.value)} placeholder='{"diff_log":[...],"final_text":"..."}'/>
+            {restoreError&&<div style={{fontFamily:"monospace",fontSize:"10px",color:"#f85149",marginTop:"4px"}}>{restoreError}</div>}
+            <div style={{display:"flex",gap:"8px",marginTop:"8px"}}><button style={S.btn("#3fb950")} onClick={restoreInstant}>⚡ 即時復元</button><button style={S.btn("#d29922")} onClick={restoreTimelapse}>▶ コマ送り</button></div>
+          </div>)}
+          {keystrokeLog.length>0&&(<div><div style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",marginBottom:"4px",letterSpacing:"1px"}}>KEYSTROKE LOG — {keystrokeLog.length} events</div><div style={{maxHeight:"90px",overflowY:"auto",fontFamily:"monospace",fontSize:"10px"}}>{keystrokeLog.slice(-8).map((e,i)=>(<div key={i} style={{lineHeight:"1.8",display:"flex",gap:"10px",color:e.type==="delete"?"#f85149":e.type==="compose"?"#d29922":"#c9d1d9"}}><span style={{color:"#8b949e",flexShrink:0}}>{fmtFull(e.t)}</span><span>{e.type==="compose"?`[確定]「${e.text}」`:e.type==="delete"?"← 削除":`「${e.char}」`}</span></div>))}</div></div>)}
+          {chart&&(<div><div style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",marginBottom:"4px"}}>TYPING CURVE — {chart.maxLen} chars</div><svg width="100%" height="40" viewBox="0 0 280 40" preserveAspectRatio="none"><polyline points={chart.pts.map(p=>`${p.x},${p.y*(40/50)}`).join(" ")} fill="none" stroke="#3fb950" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.85"/></svg></div>)}
+        </div>
+      )}
+
+      {isReplaying&&<div style={{background:"#21262d",height:"3px",overflow:"hidden",flexShrink:0}}><div style={{background:"#d29922",height:"100%",width:`${replayProgress}%`,transition:"width 0.05s"}}/></div>}
+
+      {/* Images */}
+      {showImages&&(<>
+        <div style={{height:`${imgPanelH}px`,flexShrink:0,display:"flex",flexDirection:"column",background:"#161b22"}}>
+          <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"0 10px",height:"36px",borderBottom:"1px solid #21262d",flexShrink:0}}>
+            <button onClick={()=>setImgIdx(i=>Math.max(0,i-1))} disabled={imgIdx===0||!images.length} style={{...S.btn("#8b949e"),padding:"2px 8px",opacity:imgIdx===0||!images.length?0.3:1}}>‹</button>
+            <span style={{fontFamily:"monospace",fontSize:"10px",color:"#8b949e",flex:1,textAlign:"center",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>
+              {!images.length?"画像なし":editingLabel?<input value={labelVal} onChange={e=>setLabelVal(e.target.value)} onBlur={saveLabelEdit} onKeyDown={e=>e.key==='Enter'&&saveLabelEdit()} autoFocus style={{background:"#21262d",border:"1px solid #30363d",borderRadius:"3px",color:"#c9d1d9",fontFamily:"monospace",fontSize:"10px",padding:"1px 6px",width:"140px",outline:"none"}}/>:<span onClick={()=>{setLabelVal(cur?.label||"");setEditingLabel(true);}} style={{cursor:"pointer"}}>{cur?.label||"無題"} ({imgIdx+1}/{images.length})</span>}
+            </span>
+            <button onClick={()=>setImgIdx(i=>Math.min(images.length-1,i+1))} disabled={imgIdx>=images.length-1||!images.length} style={{...S.btn("#8b949e"),padding:"2px 8px",opacity:imgIdx>=images.length-1||!images.length?0.3:1}}>›</button>
+            <button onClick={()=>fileInputRef.current.click()} style={{...S.btn("#3fb950"),padding:"2px 8px"}}>＋</button>
+            <button onClick={deleteImage} disabled={!images.length} style={{...S.btn("#f85149"),padding:"2px 8px",opacity:!images.length?0.3:1}}>🗑</button>
+          </div>
+          <div style={{flex:1,overflow:"hidden"}}><ImagePanel src={cur?.data} label={cur?.label}/></div>
+        </div>
+        <div onMouseDown={e=>startDividerDrag(e.clientY)} onTouchStart={e=>startDividerDrag(e.touches[0].clientY)} style={{height:"12px",background:"#21262d",cursor:"row-resize",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"center",userSelect:"none"}}>
+          <div style={{width:"32px",height:"3px",borderRadius:"2px",background:"#484f58"}}/>
+        </div>
+      </>)}
+
+      {/* Main content */}
+      {showOverview?(
+        <>
+          <div style={{flex:1,overflowY:"auto",padding:"8px 0",background:"#0d1117"}}>
+            {blocks.length===0&&<div style={{fontFamily:"monospace",fontSize:"11px",color:"#484f58",textAlign:"center",padding:"40px"}}>テキストがありません。</div>}
+            {blocks.map((block,bi)=>{
+              if(block.type==='heading'){return <div key={bi} style={{padding:"12px 20px 6px",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${Math.max(11,fontSize-3)}px`,color:"#8b949e",fontWeight:700,borderBottom:"1px solid #1e2733",letterSpacing:"0.02em"}}>{block.text}</div>;}
+              const pNum=blocks.slice(0,bi+1).filter(b=>b.type==='paragraph').length;
+              const first=block.sentences[0]||block.text||'';
+              const flagState=paraFlags[flagKey(block.text)]||0;
+              return(
+                <div key={bi} onClick={()=>jumpToParaFromOverview(bi)}
+                  style={{display:"flex",alignItems:"flex-start",gap:"10px",padding:"12px 20px",borderBottom:"1px solid #1e2733",cursor:"pointer",borderLeft:`3px solid ${POP_COLORS[blockColorIdx[bi]%POP_COLORS.length]}`}}>
+                  <span style={{fontFamily:"monospace",fontSize:"9px",color:POP_COLORS[blockColorIdx[bi]%POP_COLORS.length],background:POP_COLORS[blockColorIdx[bi]%POP_COLORS.length]+'22',padding:"1px 6px",borderRadius:"99px",flexShrink:0,marginTop:"3px"}}>§{pNum}</span>
+                  <span style={{display:"inline-block",width:"8px",height:"8px",borderRadius:"50%",background:flagState===1?"#f85149":flagState===2?"#3fb950":"#2d333b",flexShrink:0,marginTop:"6px"}}/>
+                  <span style={{fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${Math.max(11,fontSize-2)}px`,color:"#c9d1d9",lineHeight:"1.75",flex:1}}>{first}</span>
+                </div>
+              );
+            })}
+          </div>
+          <div style={S.statusBar}>
+            <span style={{color:"#bc8cff",fontFamily:"monospace",fontSize:"10px"}}>≡ 概観ビュー — タップで段落ビューへ</span>
+            <span style={{display:"flex",gap:"8px",alignItems:"center"}}>
+              {(()=>{let r=0,g=0;blocks.forEach(b=>{if(b.type!=='paragraph')return;const f=paraFlags[flagKey(b.text)]||0;if(f===1)r++;if(f===2)g++;});return(<>{r>0&&<span style={{color:"#f85149"}}>● {r}</span>}{g>0&&<span style={{color:"#3fb950"}}>● {g}</span>}</>);})()}
+              <span>{blocks.filter(b=>b.type==='paragraph').length} 段落</span>
+            </span>
+          </div>
+        </>
+      ):showPara?(
+        <>
+          <div style={S.paraWrap}>
+            {blocks.length===0&&<div style={{fontFamily:"monospace",fontSize:"11px",color:"#484f58",textAlign:"center",padding:"40px"}}>テキストがありません。📐を閉じて入力してください。</div>}
+            {blocks.map((block,bi)=>{
+              if(block.type==='heading'){const hs=(S.hs(fontSize))[block.level]||(S.hs(fontSize))[5];return <div key={bi} style={{...hs,fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',marginBottom:"4px"}}>{block.text}</div>;}
+              const sents=block.sentences;const isExp=expandedParas.has(bi);
+              const pNum=blocks.slice(0,bi+1).filter(b=>b.type==='paragraph').length;
+              const first=sents[0]||'';const last=sents.length>1?sents[sents.length-1]:'';const midCount=sents.length-2;
+              const isTyping=typingBi===bi;
+              return(
+                <div key={bi}
+                  ref={el=>{if(el)paraBlockRefs.current[bi]=el;else delete paraBlockRefs.current[bi];}}
+                  style={{marginBottom:"24px",border:`1px solid ${isExp?POP_COLORS[blockColorIdx[bi]%POP_COLORS.length]+"88":"#2d333b"}`,borderLeft:`4px solid ${POP_COLORS[blockColorIdx[bi]%POP_COLORS.length]}`,borderRadius:"16px",overflow:"hidden",cursor:"pointer",background:"#161b22",boxShadow:isExp?`0 6px 24px rgba(0,0,0,0.55),0 0 0 1px ${POP_COLORS[blockColorIdx[bi]%POP_COLORS.length]}33`:"0 4px 16px rgba(0,0,0,0.4)",
+                    opacity:expandedParas.size>0&&!isExp?0.15:1,transition:"opacity 0.25s,box-shadow 0.2s",
+                    animation:typingComplete===bi?'completeFlash 1.2s ease-out forwards':bi===highlightedParaBi?'paraflash 1.4s ease-out forwards':undefined}}
+                  onClick={()=>{
+                    if(isTyping&&typingWaiting){advanceTypewriter();}
+                    else{toggleParaExpand(bi);}
+                  }}>
+                  <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",padding:"12px 16px 4px"}}>
+                    <span style={{fontFamily:"monospace",fontSize:"9px",color:POP_COLORS[blockColorIdx[bi]%POP_COLORS.length],letterSpacing:"1px",background:POP_COLORS[blockColorIdx[bi]%POP_COLORS.length]+'22',padding:"1px 8px",borderRadius:"99px"}}>§{pNum}{isExp?" ▼":""}</span>
+                    <div style={{display:"flex",gap:"8px",alignItems:"center"}}>
+                      <button onClick={e=>cycleFlag(block.text,e)} title="フラグ切替（未・要修正・完了）" style={{background:"none",border:"none",cursor:"pointer",padding:"2px",display:"flex",alignItems:"center",justifyContent:"center"}}>
+                        <span style={{display:"inline-block",width:"11px",height:"11px",borderRadius:"50%",background:(paraFlags[flagKey(block.text)]||0)===1?"#f85149":(paraFlags[flagKey(block.text)]||0)===2?"#3fb950":"#2d333b",transition:"background 0.15s",flexShrink:0}}/>
+                      </button>
+                      <button onClick={e=>{e.stopPropagation();jumpToBlock(block.start);}} style={{fontFamily:"monospace",fontSize:"10px",color:"#58a6ff",background:"none",border:"1px solid #58a6ff",borderRadius:"3px",padding:"1px 7px",cursor:"pointer",lineHeight:"1.4"}}>✏️ 編集</button>
+                    </div>
+                  </div>
+                  {isExp?(
+                    isTyping?(
+                      <>
+                        <div style={{...ss(fontSize),color:"#e0dbd0"}}>
+                          {typingSentIdx===0?sents[0].slice(0,typingCount):sents[0]}
+                          {typingSentIdx===0&&(typingWaiting?<span style={{fontFamily:"monospace",fontSize:"9px",color:"#58a6ff",marginLeft:"8px",animation:"recpulse 1.4s ease-in-out infinite",verticalAlign:"middle"}}>tap ▸</span>:<span style={{borderRight:"2px solid #58a6ff",animation:"recpulse 0.6s ease-in-out infinite",marginLeft:"1px"}}>&nbsp;</span>)}
+                        </div>
+                        {sents.length>2&&typingSentIdx>0&&(
+                          <div style={midStyle(fontSize)}>
+                            {sents.slice(1,Math.min(typingSentIdx,sents.length-1)).join('')}
+                            {typingSentIdx>=1&&typingSentIdx<sents.length-1&&sents[typingSentIdx].slice(0,typingCount)}
+                            {typingSentIdx>=1&&typingSentIdx<sents.length-1&&(typingWaiting?<span style={{fontFamily:"monospace",fontSize:"9px",color:"#58a6ff",marginLeft:"8px",animation:"recpulse 1.4s ease-in-out infinite",verticalAlign:"middle"}}>tap ▸</span>:<span style={{borderRight:"2px solid #58a6ff",animation:"recpulse 0.6s ease-in-out infinite",marginLeft:"1px"}}>&nbsp;</span>)}
+                          </div>
+                        )}
+                        {sents.length>1&&typingSentIdx===sents.length-1&&(
+                          <div style={{...ss(fontSize),color:"#e0dbd0",paddingTop:"2px",paddingBottom:"10px"}}>
+                            {sents[sents.length-1].slice(0,typingCount)}
+                            <span style={{borderRight:"2px solid #58a6ff",animation:"recpulse 0.6s ease-in-out infinite",marginLeft:"1px"}}>&nbsp;</span>
+                          </div>
+                        )}
+                      </>
+                    ):(
+                      <>
+                        <div style={{...ss(fontSize),color:"#e0dbd0"}}>{first}</div>
+                        {midCount>0&&<div style={midStyle(fontSize)}>{sents.slice(1,-1).join('')}</div>}
+                        {sents.length>1&&<div style={{...ss(fontSize),color:"#e0dbd0",paddingTop:"2px",paddingBottom:"10px"}}>{last}</div>}
+                      </>
+                    )
+                  ):(
+                    <>
+                      <div style={{...ss(fontSize),color:"#e0dbd0"}}>{first}</div>
+                      {midCount>0&&<div style={{display:"flex",alignItems:"center",gap:"6px",padding:"2px 12px"}}><span style={{flex:1,height:"1px",background:"#21262d"}}/><span style={{fontFamily:"monospace",fontSize:"10px",color:"#58a6ff"}}>▸ {midCount}文</span><span style={{flex:1,height:"1px",background:"#21262d"}}/></div>}
+                      {sents.length>1&&<div style={{...ss(fontSize),color:"#e0dbd0",paddingTop:"2px",paddingBottom:"10px"}}>{last}</div>}
+                    </>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+          <div style={S.statusBar}>
+            <span style={{color:"#58a6ff",fontFamily:"monospace",fontSize:"10px"}}>📐 段落ビュー — タップで展開 / ✏️ で編集へ</span>
+            <span style={{display:"flex",gap:"8px",alignItems:"center"}}>
+              {(()=>{let r=0,g=0;blocks.forEach(b=>{if(b.type!=='paragraph')return;const f=paraFlags[flagKey(b.text)]||0;if(f===1)r++;if(f===2)g++;});return(<>{r>0&&<span style={{color:"#f85149"}}>● {r}</span>}{g>0&&<span style={{color:"#3fb950"}}>● {g}</span>}</>);})()}
+              <span>{blocks.filter(b=>b.type==='paragraph').length} 段落</span>
+            </span>
+          </div>
+        </>
+      ):(
+        <div style={{flex:1,display:"flex",flexDirection:"column",position:"relative",overflow:"hidden",minHeight:0}}>
+          {jumpFlash&&<div style={{position:"absolute",top:"12px",left:"50%",transform:"translateX(-50%)",background:"rgba(88,166,255,0.92)",color:"white",fontFamily:"monospace",fontSize:"12px",padding:"5px 16px",borderRadius:"14px",pointerEvents:"none",zIndex:20,animation:"jumpfade 1.8s forwards",whiteSpace:"nowrap"}}>§{jumpFlash} に移動</div>}
+          {/* Search highlight mirror */}
+          {highlightedContent&&(
+            <div ref={textMirrorRef} style={{position:"absolute",top:0,left:0,right:0,bottom:0,fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${fontSize}px`,lineHeight:"2",padding:"24px 20px",color:"transparent",whiteSpace:"pre-wrap",wordBreak:"break-word",wordWrap:"break-word",overflowY:"hidden",pointerEvents:"none",zIndex:0,boxSizing:"border-box",background:"#0d1117"}}>
+              {highlightedContent}
+            </div>
+          )}
+          <AutoTA
+            value={isReplaying?replayText:text}
+            onChange={e=>{const newLen=e.target.value.length;if(newLen>=prevTextLenRef.current)sound('key');prevTextLenRef.current=newLen;applyTextUpdate(e.target.value);}}
+            onFocus={()=>{if(!isRecordingRef.current)startRecording();}}
+            onBlur={()=>{if(isRecordingRef.current)save();}}
+            onKeyDown={handleKeyDown}
+            onCompositionStart={handleCompositionStart}
+            onCompositionEnd={handleCompositionEnd}
+            placeholder="ここに入力すると記録が始まります。見出しは # 第1節 のように書きます。"
+            style={S.editor(fontSize)}
+            inputRef={textareaRef}
+          />
+          <div style={S.statusBar}>
+            <span style={{display:"flex",alignItems:"center"}}>{isRecording&&<span style={S.recDot}/>}{isRecording?`記録中 ${fmtTime(elapsed)}`:restored?"↩ 前回を復元":"待機中"}</span>
+            <span>{wc(text)} 語 ｜ {text.split('\n').length} 行</span>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<WritingApp />);
+  </script>
+</body>
+</html>
