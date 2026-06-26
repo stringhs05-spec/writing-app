@@ -85,18 +85,19 @@ function ImagePanel({src,label}){
 }
 
 // ── AutoTA ─────────────────────────────────────────────────────
-function AutoTA({value,onChange,onKeyDown,onCompositionStart,onCompositionEnd,style,placeholder,inputRef}){
+function AutoTA({value,onChange,onKeyDown,onCompositionStart,onCompositionEnd,onSelect,style,placeholder,inputRef}){
   const ownRef=useRef(null);const ref=inputRef||ownRef;const focused=useRef(false);
   const resize=()=>{if(ref.current){ref.current.style.height='auto';ref.current.style.height=ref.current.scrollHeight+'px';}};
   useEffect(()=>{if(ref.current){ref.current.value=value;resize();}},[]);// eslint-disable-line
   useEffect(()=>{if(ref.current&&!focused.current){ref.current.value=value;resize();}},[value]);
-  return(<textarea ref={ref} onFocus={()=>{focused.current=true;}} onBlur={()=>{focused.current=false;}} onChange={e=>{resize();onChange(e);}} onKeyDown={onKeyDown} onCompositionStart={onCompositionStart} onCompositionEnd={onCompositionEnd} placeholder={placeholder} style={{display:'block',width:'100%',resize:'none',overflow:'hidden',border:'none',outline:'none',background:'transparent',...style}}/>);
+  return(<textarea ref={ref} onFocus={()=>{focused.current=true;}} onBlur={()=>{focused.current=false;}} onChange={e=>{resize();onChange(e);}} onKeyDown={onKeyDown} onCompositionStart={onCompositionStart} onCompositionEnd={onCompositionEnd} onSelect={onSelect} placeholder={placeholder} style={{display:'block',width:'100%',resize:'none',overflow:'hidden',border:'none',outline:'none',background:'transparent',...style}}/>);
 }
 
 // ── Main App ───────────────────────────────────────────────────
 function WritingApp(){
   const STORAGE_KEY="writing_app_v1";
   const IMG_KEY="writing_app_images_v1";
+  const IMG_SETTINGS_KEY="writing_app_img_settings_v1";
 
   const [text,setText]=useState("");
   const [showPara,setShowPara]=useState(false);
@@ -137,6 +138,23 @@ function WritingApp(){
   const [editingLabel,setEditingLabel]=useState(false);
   const [labelVal,setLabelVal]=useState("");
   const fileInputRef=useRef(null);
+  // Background image adjust
+  const [bgScale,setBgScale]=useState(1);
+  const [bgOffX,setBgOffX]=useState(0);
+  const [bgOffY,setBgOffY]=useState(0);
+  const [bgOpacity,setBgOpacity]=useState(0.22);
+  const [showAdjust,setShowAdjust]=useState(false);
+  const [adjScale,setAdjScale]=useState(1);
+  const [adjOffX,setAdjOffX]=useState(0);
+  const [adjOffY,setAdjOffY]=useState(0);
+  const [adjOpacity,setAdjOpacity]=useState(0.22);
+  const adjTouchRef=useRef({});
+  const isInitialLoadRef=useRef(true);
+  const lastCursorPosRef=useRef(0);
+  useEffect(()=>{
+    if(isInitialLoadRef.current)return;
+    setBgScale(1);setBgOffX(0);setBgOffY(0);
+  },[imgIdx]);
 
   // Log state
   const [showLog,setShowLog]=useState(false);
@@ -182,6 +200,11 @@ function WritingApp(){
 
   useEffect(()=>{showParaRef.current=showPara;},[showPara]);
   useEffect(()=>{expandedParasRef.current=expandedParas;},[expandedParas]);
+  useEffect(()=>{
+    if(!restored)return;
+    try{const s=localStorage.getItem(STORAGE_KEY);if(!s)return;const d=JSON.parse(s);if(d.cursorPos===undefined)return;
+      setTimeout(()=>{const ta=textareaRef.current;if(!ta)return;ta.focus();ta.setSelectionRange(d.cursorPos,d.cursorPos);const top=measureCursorTop(ta,d.cursorPos);ta.scrollTop=Math.max(0,top-ta.clientHeight/2);},200);}catch(e){}
+  },[restored]); // eslint-disable-line
 
   const blocks=useMemo(()=>parseToBlocks(text),[text]);
   const blockColorIdx=useMemo(()=>{let idx=0;return blocks.map((b,i)=>{if(b.type==='heading'&&i>0)idx++;return idx;});},[blocks]);
@@ -223,8 +246,13 @@ function WritingApp(){
 
   // Load state
   useEffect(()=>{try{const s=localStorage.getItem(STORAGE_KEY);if(!s)return;const d=JSON.parse(s);if(d.text){setText(d.text);textRef.current=d.text;displayTextRef.current=d.text;lastSnapshotRef.current=d.text;}if(d.title)setDocTitle(d.title);if(d.diffLog?.length){diffLogRef.current=d.diffLog;setDiffLog(d.diffLog);}if(d.keystrokeLog?.length){keystrokeLogRef.current=d.keystrokeLog;setKeystrokeLog(d.keystrokeLog);}if(d.sessionStart){sessionStartRef.current=d.sessionStart;setSessionStart(d.sessionStart);}if(d.initialText!==undefined)initialTextRef.current=d.initialText;setRestored(true);}catch(e){}},[]); // eslint-disable-line
-  useEffect(()=>{try{const s=localStorage.getItem(IMG_KEY);if(s){const imgs=JSON.parse(s);if(imgs.length>0)setImages(imgs);}}catch(e){}},[]); // eslint-disable-line
-  const save=()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({sessionStart:sessionStartRef.current,initialText:initialTextRef.current,text:displayTextRef.current,title:docTitle,diffLog:diffLogRef.current,keystrokeLog:keystrokeLogRef.current}));}catch(e){}};
+  useEffect(()=>{try{const s=localStorage.getItem(IMG_KEY);if(s){const imgs=JSON.parse(s);if(imgs.length>0)setImages(imgs);}}catch(e){}
+    try{const s=localStorage.getItem(IMG_SETTINGS_KEY);if(s){const d=JSON.parse(s);if(d.showImages!==undefined)setShowImages(d.showImages);if(d.imgIdx!==undefined)setImgIdx(d.imgIdx);if(d.bgScale!==undefined)setBgScale(d.bgScale);if(d.bgOffX!==undefined)setBgOffX(d.bgOffX);if(d.bgOffY!==undefined)setBgOffY(d.bgOffY);if(d.bgOpacity!==undefined)setBgOpacity(d.bgOpacity);}}catch(e){}
+    setTimeout(()=>{isInitialLoadRef.current=false;},200);
+  },[]); // eslint-disable-line
+  useEffect(()=>{try{localStorage.setItem(IMG_SETTINGS_KEY,JSON.stringify({showImages,imgIdx,bgScale,bgOffX,bgOffY,bgOpacity}));}catch(e){}
+  },[showImages,imgIdx,bgScale,bgOffX,bgOffY,bgOpacity]);
+  const save=()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({sessionStart:sessionStartRef.current,initialText:initialTextRef.current,text:displayTextRef.current,title:docTitle,diffLog:diffLogRef.current,keystrokeLog:keystrokeLogRef.current,cursorPos:lastCursorPosRef.current}));}catch(e){}};
   const saveImages=imgs=>{try{localStorage.setItem(IMG_KEY,JSON.stringify(imgs));}catch(e){alert("画像の保存に失敗しました。");}};
   const saveFlags=f=>{try{localStorage.setItem('writing_app_paraflags_v1',JSON.stringify(f));}catch(e){}};
   const cycleFlag=(t,e)=>{e.stopPropagation();const k=flagKey(t);setParaFlags(prev=>{const cur=prev[k]||0;const next=(cur+1)%3;const u={...prev,[k]:next};saveFlags(u);return u;});};
@@ -538,7 +566,30 @@ function WritingApp(){
 
   const chart=useMemo(()=>{const log=diffLogRef.current;if(log.length<5)return null;const t0=log[0].t,dur=log[log.length-1].t-t0;if(!dur)return null;const step=Math.max(1,Math.floor(log.length/60));let len=initialTextRef.current.length;const pts=[];for(let i=0;i<log.length;i++){len=len-log[i].del+log[i].ins.length;if(i%step===0)pts.push({x:((log[i].t-t0)/dur)*280,len});}const maxLen=Math.max(...pts.map(p=>p.len),1);return{pts:pts.map(p=>({x:p.x,y:48-(p.len/maxLen)*44})),maxLen};},[diffLog]);
 
-  // ── Para expand/collapse ───────────────────────────────────────
+  // ── Image adjust touch handlers ────────────────────────────────
+  const openAdjust=()=>{setAdjScale(bgScale);setAdjOffX(bgOffX);setAdjOffY(bgOffY);setAdjOpacity(bgOpacity);setShowAdjust(true);};
+  const confirmAdjust=()=>{setBgScale(adjScale);setBgOffX(adjOffX);setBgOffY(adjOffY);setBgOpacity(adjOpacity);setShowAdjust(false);};
+  const onAdjTouchStart=e=>{
+    if(e.touches.length===1){
+      adjTouchRef.current={type:'pan',x0:e.touches[0].clientX,y0:e.touches[0].clientY,ox:adjOffX,oy:adjOffY};
+    } else if(e.touches.length===2){
+      const dx=e.touches[1].clientX-e.touches[0].clientX,dy=e.touches[1].clientY-e.touches[0].clientY;
+      adjTouchRef.current={type:'pinch',dist0:Math.hypot(dx,dy),sc0:adjScale};
+    }
+  };
+  const onAdjTouchMove=e=>{
+    e.preventDefault();
+    const r=adjTouchRef.current;
+    if(r.type==='pan'&&e.touches.length===1){
+      setAdjOffX(r.ox+(e.touches[0].clientX-r.x0)/adjScale);
+      setAdjOffY(r.oy+(e.touches[0].clientY-r.y0)/adjScale);
+    } else if(r.type==='pinch'&&e.touches.length===2){
+      const dx=e.touches[1].clientX-e.touches[0].clientX,dy=e.touches[1].clientY-e.touches[0].clientY;
+      setAdjScale(Math.max(0.5,Math.min(6,r.sc0*Math.hypot(dx,dy)/r.dist0)));
+    }
+  };
+
+
   const toggleParaExpand=bi=>{
     lastActiveParaBiRef.current=bi;
     setExpandedParas(prev=>{
@@ -567,7 +618,7 @@ function WritingApp(){
     logBtn:{width:"28px",height:"28px",borderRadius:"4px",border:"1px solid #30363d",background:"none",color:"#8b949e",fontSize:"13px",cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"},
     recDot:{width:6,height:6,borderRadius:"50%",background:"#f85149",animation:"recpulse 1.5s ease-in-out infinite",flexShrink:0,marginRight:2},
     statusBar:{height:"26px",display:"flex",alignItems:"center",justifyContent:"space-between",padding:"0 16px",background:"#0d1117",borderTop:"1px solid #21262d",fontFamily:"monospace",fontSize:"10px",color:"#484f58",flexShrink:0},
-    editor:fs=>({flex:1,padding:"24px 20px",background:"transparent",color:"#e0dbd0",border:"none",outline:"none",resize:"none",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${fs}px`,lineHeight:"2",width:"100%",overflowY:"auto",position:"relative",zIndex:1}),
+    editor:fs=>({flex:1,padding:"24px 20px",background:"transparent",color:"#e0dbd0",border:"none",outline:"none",resize:"none",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${fs}px`,lineHeight:"2",width:"100%",overflowY:"auto",position:"relative",zIndex:1,textShadow:"0 0 8px #0d1117,0 0 4px #0d1117,0 1px 2px #0d1117"}),
     paraWrap:{flex:1,overflowY:"auto",padding:"20px 16px",background:"#0d1117"},
     hs:fs=>({1:{fontSize:`${fs+3}px`,fontWeight:700,color:"#e0dbd0",padding:"8px 12px",borderBottom:"1px solid #21262d",marginBottom:"4px"},2:{fontSize:`${fs}px`,fontWeight:700,color:"#c9d1d9",padding:"6px 12px"},3:{fontSize:`${fs-1}px`,fontWeight:600,color:"#b0a898",padding:"5px 12px"},4:{fontSize:`${fs-2}px`,fontWeight:600,color:"#8b949e",padding:"4px 12px"},5:{fontSize:`${Math.max(11,fs-3)}px`,color:"#8b949e",padding:"4px 12px"}}),
     btn:c=>({padding:"5px 10px",background:"transparent",color:c,border:`1px solid ${c}`,borderRadius:"4px",cursor:"pointer",fontFamily:"monospace",fontSize:"11px"}),
@@ -685,8 +736,23 @@ function WritingApp(){
 
       {isReplaying&&<div style={{background:"#21262d",height:"3px",overflow:"hidden",flexShrink:0}}><div style={{background:"#d29922",height:"100%",width:`${replayProgress}%`,transition:"width 0.05s"}}/></div>}
 
-      {/* Images */}
-      {showImages&&(<>
+      {/* Slim image controls strip — editor mode only */}
+      {showImages&&!showPara&&!showOverview&&(
+        <div style={{display:"flex",alignItems:"center",gap:"4px",padding:"0 8px",height:"36px",background:"#161b22",borderBottom:"1px solid #21262d",flexShrink:0}}>
+          <button onClick={()=>setImgIdx(i=>Math.max(0,i-1))} disabled={imgIdx===0||!images.length} style={{...S.btn("#8b949e"),padding:"3px 8px",opacity:imgIdx===0||!images.length?0.3:1}}>‹</button>
+          <button onClick={()=>setImgIdx(i=>Math.min(images.length-1,i+1))} disabled={imgIdx>=images.length-1||!images.length} style={{...S.btn("#8b949e"),padding:"3px 8px",opacity:imgIdx>=images.length-1||!images.length?0.3:1}}>›</button>
+          <button onClick={deleteImage} disabled={!images.length} style={{...S.btn("#f85149"),padding:"3px 10px",opacity:!images.length?0.3:1,marginLeft:"6px"}}>🗑</button>
+          <div style={{flex:1}}/>
+          <button onClick={()=>setBgOpacity(v=>Math.max(0.05,+(v-0.05).toFixed(2)))} disabled={!images.length} style={{...S.btn("#8b949e"),padding:"3px 8px",opacity:!images.length?0.3:1}}>−</button>
+          <span style={{fontFamily:"monospace",fontSize:"10px",color:"#8b949e",minWidth:"28px",textAlign:"center"}}>{Math.round(bgOpacity*100)}%</span>
+          <button onClick={()=>setBgOpacity(v=>Math.min(0.6,+(v+0.05).toFixed(2)))} disabled={!images.length} style={{...S.btn("#8b949e"),padding:"3px 8px",opacity:!images.length?0.3:1}}>＋</button>
+          <div style={{flex:1}}/>
+          <button onClick={()=>fileInputRef.current.click()} style={{...S.btn("#3fb950"),padding:"3px 10px"}}>＋</button>
+          <button onClick={openAdjust} disabled={!images.length} style={{padding:"5px 16px",background:"transparent",color:"#58a6ff",border:"1px solid #58a6ff",borderRadius:"4px",cursor:"pointer",fontSize:"18px",opacity:!images.length?0.3:1,lineHeight:1}}>🖌️</button>
+        </div>
+      )}
+      {/* Images — full panel in para/overview mode */}
+      {showImages&&(showPara||showOverview)&&(<>
         <div style={{height:`${imgPanelH}px`,flexShrink:0,display:"flex",flexDirection:"column",background:"#161b22"}}>
           <div style={{display:"flex",alignItems:"center",gap:"6px",padding:"0 10px",height:"36px",borderBottom:"1px solid #21262d",flexShrink:0}}>
             <button onClick={()=>setImgIdx(i=>Math.max(0,i-1))} disabled={imgIdx===0||!images.length} style={{...S.btn("#8b949e"),padding:"2px 8px",opacity:imgIdx===0||!images.length?0.3:1}}>‹</button>
@@ -810,6 +876,23 @@ function WritingApp(){
         </>
       ):(
         <div style={{flex:1,display:"flex",flexDirection:"column",position:"relative",overflow:"hidden",minHeight:0}}>
+          {showImages&&cur&&(
+            <div style={{position:"absolute",inset:0,overflow:"hidden",pointerEvents:"none",zIndex:0}}>
+              <img src={cur.data} style={{position:"absolute",width:"100%",top:0,left:0,opacity:bgOpacity,transformOrigin:"top center",transform:`scale(${bgScale}) translate(${bgOffX}px,${bgOffY}px)`,objectFit:"contain",userSelect:"none"}}/>
+            </div>
+          )}
+          {/* Adjust overlay */}
+          {showAdjust&&cur&&(
+            <div style={{position:"absolute",inset:0,zIndex:100,background:"rgba(0,0,0,0.92)",overflow:"hidden",touchAction:"none"}}
+              onTouchStart={onAdjTouchStart} onTouchMove={onAdjTouchMove} onTouchEnd={()=>{adjTouchRef.current={};}}>
+              <img src={cur.data} style={{position:"absolute",width:"100%",top:0,left:0,transformOrigin:"top center",transform:`scale(${adjScale}) translate(${adjOffX}px,${adjOffY}px)`,objectFit:"contain",userSelect:"none",WebkitUserSelect:"none",pointerEvents:"none"}}/>
+              <div style={{position:"absolute",top:10,left:0,right:0,textAlign:"center",fontFamily:"monospace",fontSize:"11px",color:"rgba(255,255,255,0.45)",pointerEvents:"none"}}>ピンチでズーム・ドラッグで移動</div>
+              <div style={{position:"absolute",bottom:24,left:0,right:0,display:"flex",justifyContent:"center",gap:"16px"}}>
+                <button onTouchEnd={e=>{e.stopPropagation();setShowAdjust(false);}} style={{padding:"10px 24px",background:"#21262d",color:"#f85149",border:"1px solid #f85149",borderRadius:"8px",fontFamily:"monospace",fontSize:"15px",cursor:"pointer"}}>✕ キャンセル</button>
+                <button onTouchEnd={e=>{e.stopPropagation();confirmAdjust();}} style={{padding:"10px 24px",background:"#21262d",color:"#3fb950",border:"1px solid #3fb950",borderRadius:"8px",fontFamily:"monospace",fontSize:"15px",cursor:"pointer"}}>✓ 確定</button>
+              </div>
+            </div>
+          )}
           {jumpFlash&&<div style={{position:"absolute",top:"12px",left:"50%",transform:"translateX(-50%)",background:"rgba(88,166,255,0.92)",color:"white",fontFamily:"monospace",fontSize:"12px",padding:"5px 16px",borderRadius:"14px",pointerEvents:"none",zIndex:20,animation:"jumpfade 1.8s forwards",whiteSpace:"nowrap"}}>§{jumpFlash} に移動</div>}
           {/* Search highlight mirror */}
           {highlightedContent&&(
@@ -825,6 +908,7 @@ function WritingApp(){
             onKeyDown={handleKeyDown}
             onCompositionStart={handleCompositionStart}
             onCompositionEnd={handleCompositionEnd}
+            onSelect={()=>{if(textareaRef.current)lastCursorPosRef.current=textareaRef.current.selectionStart;}}
             placeholder="ここに入力すると記録が始まります。見出しは # 第1節 のように書きます。"
             style={S.editor(fontSize)}
             inputRef={textareaRef}
