@@ -98,6 +98,7 @@ function WritingApp(){
   const STORAGE_KEY="writing_app_v1";
   const IMG_KEY="writing_app_images_v1";
   const IMG_SETTINGS_KEY="writing_app_img_settings_v1";
+  const CARD_QUEUE_KEY="writing_app_card_queue_v1";
 
   const [text,setText]=useState("");
   const [showPara,setShowPara]=useState(false);
@@ -151,6 +152,7 @@ function WritingApp(){
   const adjTouchRef=useRef({});
   const isInitialLoadRef=useRef(true);
   const lastCursorPosRef=useRef(0);
+  const cardEditRef=useRef('');
   useEffect(()=>{
     if(isInitialLoadRef.current)return;
     setBgScale(1);setBgOffX(0);setBgOffY(0);
@@ -176,6 +178,17 @@ function WritingApp(){
   const [jumpFlash,setJumpFlash]=useState(null);
   const [targetParaBi,setTargetParaBi]=useState(null);
   const [paraFlags,setParaFlags]=useState(()=>{try{const s=localStorage.getItem('writing_app_paraflags_v1');return s?JSON.parse(s):{};}catch(e){return{};}});
+  // Card proof mode
+  const [cardMode,setCardMode]=useState(false);
+  const [cardSession,setCardSession]=useState([]);
+  const [cardPos,setCardPos]=useState(0);
+  const [cardEdit,setCardEdit]=useState('');
+  const [cardShuffled,setCardShuffled]=useState(false);
+  const [cardDone,setCardDone]=useState(false);
+  const [cardConfirm,setCardConfirm]=useState(null);
+  const [cardQueue,setCardQueue]=useState(()=>{try{const s=localStorage.getItem('writing_app_card_queue_v1');return s?JSON.parse(s):[];}catch(e){return[];}});
+  const [cardImageMap,setCardImageMap]=useState(()=>{try{const s=localStorage.getItem('writing_app_card_image_map_v1');return s?JSON.parse(s):{};}catch(e){return{};}});
+  const [showImagePicker,setShowImagePicker]=useState(false);
 
   // Search / Replace
   const [showSearch,setShowSearch]=useState(false);
@@ -569,6 +582,102 @@ function WritingApp(){
   // ── Image adjust touch handlers ────────────────────────────────
   const openAdjust=()=>{setAdjScale(bgScale);setAdjOffX(bgOffX);setAdjOffY(bgOffY);setAdjOpacity(bgOpacity);setShowAdjust(true);};
   const confirmAdjust=()=>{setBgScale(adjScale);setBgOffX(adjOffX);setBgOffY(adjOffY);setBgOpacity(adjOpacity);setShowAdjust(false);};
+
+  // ── Card proof mode ────────────────────────────────────────────
+  const paraId=p=>p.slice(0,40).replace(/\s/g,'')+'_'+p.length;
+  const getAllParas=()=>text.split(/\n\n+/).filter(p=>p.trim());
+  const buildFullQueue=shuffled=>{
+    const ids=getAllParas().map(p=>paraId(p));
+    return shuffled?[...ids].sort(()=>Math.random()-0.5):ids;
+  };
+  const saveQueue=q=>{try{localStorage.setItem(CARD_QUEUE_KEY,JSON.stringify(q));}catch(e){}};
+  const saveCardImageMap=m=>{try{localStorage.setItem('writing_app_card_image_map_v1',JSON.stringify(m));}catch(e){}};
+  const applyCurCardImage=(sess,pos,map)=>{
+    const id=sess[pos]?.id;
+    const idx=id!==undefined?map[id]:undefined;
+    if(idx!==undefined&&idx<images.length){setImgIdx(idx);setShowImages(true);}
+  };
+  const linkCardImage=idx=>{
+    const id=cardSession[cardPos]?.id;if(!id)return;
+    const m={...cardImageMap,[id]:idx};setCardImageMap(m);saveCardImageMap(m);
+    setImgIdx(idx);setShowImages(true);setShowImagePicker(false);
+  };
+  const unlinkCardImage=()=>{
+    const id=cardSession[cardPos]?.id;if(!id)return;
+    const m={...cardImageMap};delete m[id];setCardImageMap(m);saveCardImageMap(m);
+    setShowImagePicker(false);
+  };  const enterCardMode=()=>{
+    const all=getAllParas();
+    const lookup=Object.fromEntries(all.map(p=>[paraId(p),p]));
+    let q=cardQueue.filter(id=>lookup[id]);
+    if(q.length===0){q=buildFullQueue(cardShuffled);}
+    const take=q.slice(0,4);const rest=q.slice(4);
+    const sess=take.map(id=>({id,text:lookup[id],edited:lookup[id],dirty:false})).filter(c=>c.text);
+    if(!sess.length)return;
+    setCardQueue(rest);saveQueue(rest);
+    setCardSession(sess);setCardPos(0);setCardEdit(sess[0].text);
+    setCardDone(false);setCardConfirm(null);setCardMode(true);
+    applyCurCardImage(sess,0,cardImageMap);
+  };
+  const cardHasChanges=()=>cardEdit.trim()!==(cardSession[cardPos]?.text||'').trim();
+  const sessionHasDirty=()=>cardSession.some(c=>c.dirty);
+  const saveCurrentEdit=()=>{
+    if(!cardHasChanges())return;
+    const ns=[...cardSession];
+    ns[cardPos]={...ns[cardPos],edited:cardEdit,dirty:true};
+    setCardSession(ns);
+  };
+  const applyAllChanges=()=>{
+    let newText=text;
+    for(const c of cardSession.filter(c=>c.dirty)){
+      const pos=newText.indexOf(c.text);
+      if(pos!==-1)newText=newText.slice(0,pos)+c.edited+newText.slice(pos+c.text.length);
+    }
+    applyTextUpdate(newText);
+  };
+  const advanceCard=()=>{
+    saveCurrentEdit();setCardConfirm(null);
+    if(cardPos>=cardSession.length-1){setCardDone(true);}
+    else{const n=cardPos+1;setCardPos(n);setCardEdit(cardSession[n].text);applyCurCardImage(cardSession,n,cardImageMap);}
+  };
+  const handleCardComplete=advanceCard;
+  const handleCardExit=()=>{
+    saveCurrentEdit();
+    if(sessionHasDirty()||cardHasChanges()){setCardConfirm('exit');return;}
+    setCardMode(false);
+  };
+  const openCurrentParaAsCard=()=>{
+    const cursor=textareaRef.current?.selectionStart??0;
+    const parts=text.split(/(\n\n+)/);
+    let pos=0;
+    for(const part of parts){
+      if(pos<=cursor&&cursor<=pos+part.length&&part.trim()){
+        const p=part.trim();
+        const card={id:paraId(p),text:p,edited:p,dirty:false};
+        setCardSession([card]);setCardPos(0);setCardEdit(p);
+        setCardDone(false);setCardConfirm(null);setCardMode(true);
+        applyCurCardImage([card],0,cardImageMap);
+        return;
+      }
+      pos+=part.length;
+    }
+  };
+  // カードtextareaのログ記録
+  useEffect(()=>{cardEditRef.current=cardEdit;},[cardEdit]);
+  const handleCardEditChange=e=>{
+    const newVal=e.target.value;const prevVal=cardEditRef.current;
+    if(!isRecordingRef.current)startRecording();
+    const diff=computeDiff(prevVal,newVal);
+    if(diff.del>0||diff.ins.length>0){
+      const entry={t:Date.now(),...diff};
+      diffLogRef.current.push(entry);setDiffLog(prev=>[...prev.slice(-299),entry]);
+    }
+    const isIns=newVal.length>=prevVal.length;
+    const ks={t:Date.now(),type:isIns?'insert':'delete',char:isIns?(newVal[diff.pos]||''):'←'};
+    keystrokeLogRef.current.push(ks);setKeystrokeLog(prev=>[...prev.slice(-999),ks]);
+    if(isIns)sound('key');
+    cardEditRef.current=newVal;setCardEdit(newVal);
+  };
   const onAdjTouchStart=e=>{
     if(e.touches.length===1){
       adjTouchRef.current={type:'pan',x0:e.touches[0].clientX,y0:e.touches[0].clientY,ox:adjOffX,oy:adjOffY};
@@ -658,8 +767,7 @@ function WritingApp(){
           <button onClick={()=>changeFontSize(1)} style={{...S.logBtn,fontSize:"11px",fontWeight:"bold"}}>A+</button>
           <button onClick={applyUndo} title="Undo (Cmd+Z)" style={{...S.logBtn,fontSize:"15px",opacity:undoStackRef.current.length?1:0.35}}>↩</button>
           <button onClick={applyRedo} title="Redo" style={{...S.logBtn,fontSize:"15px",opacity:redoStackRef.current.length?1:0.35}}>↪</button>
-          <button style={S.paraBtn(showPara)} onClick={()=>{
-            setShowOverview(false);
+          <button style={S.paraBtn(showPara)} onClick={()=>{            setShowOverview(false);
             if(!showPara){
               const cursor=textareaRef.current?.selectionStart??0;
               const cb=parseToBlocks(text);let tbi=0;
@@ -676,6 +784,8 @@ function WritingApp(){
             if(!showPara)sound('paraOn');else sound('paraOff');
           }}>📐</button>
           <button style={S.overviewBtn(showOverview)} onClick={()=>{setShowOverview(v=>!v);setShowPara(false);if(!showOverview)sound('paraOn');else sound('paraOff');}}>≡</button>
+          <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} onClick={()=>enterCardMode()}>🃏</button>
+          <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} title="カーソル位置の段落をカードで編集" onClick={openCurrentParaAsCard}>¶</button>
           <button style={S.imgBtn(showImages)} onClick={()=>setShowImages(v=>!v)}>🖼</button>
           <button style={{...S.logBtn,border:showSearch?"1px solid #58a6ff":"1px solid #30363d",color:showSearch?"#58a6ff":"#8b949e"}} onClick={()=>setShowSearch(v=>{if(!v)setTimeout(()=>searchInputRef.current?.focus(),50);return!v;})}>🔍</button>
           <button style={{...S.logBtn,color:soundEnabled?"#8b949e":"#484f58"}} onClick={()=>setSoundEnabled(v=>{const n=!v;try{localStorage.setItem('writing_app_sound',n?'on':'off');}catch(e){}if(n)setTimeout(_resetAudioCtx,50);return n;})}>{soundEnabled?"🔊":"🔇"}</button>
@@ -917,6 +1027,113 @@ function WritingApp(){
             <span style={{display:"flex",alignItems:"center"}}>{isRecording&&<span style={S.recDot}/>}{isRecording?`記録中 ${fmtTime(elapsed)}`:restored?"↩ 前回を復元":"待機中"}</span>
             <span>{wc(text)} 語 ｜ {text.split('\n').length} 行</span>
           </div>
+        </div>
+      )}
+      {/* ── Card Proof Mode Overlay ── */}
+      {cardMode&&(
+        <div style={{position:"absolute",inset:0,zIndex:200,background:"#0d1117",display:"flex",flexDirection:"column",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif'}}>
+          {/* Image picker overlay */}
+          {showImagePicker&&(
+            <div style={{position:"absolute",inset:0,zIndex:8,background:"rgba(0,0,0,0.88)",display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"20px"}}>
+              <div style={{color:"#e0dbd0",fontFamily:"monospace",fontSize:"12px",marginBottom:"14px"}}>画像を選択してリンク</div>
+              <div style={{display:"flex",flexWrap:"wrap",gap:"10px",justifyContent:"center",maxHeight:"55vh",overflowY:"auto",width:"100%"}}>
+                {images.length===0&&<div style={{color:"#8b949e",fontFamily:"monospace",fontSize:"11px"}}>画像なし（＋で追加）</div>}
+                {images.map((img,idx)=>{
+                  const id=cardSession[cardPos]?.id;
+                  const isLinked=cardImageMap[id]===idx;
+                  return(
+                    <div key={idx} onClick={()=>isLinked?unlinkCardImage():linkCardImage(idx)}
+                      style={{position:"relative",width:"110px",height:"75px",borderRadius:"8px",overflow:"hidden",border:`2px solid ${isLinked?"#3fb950":"#30363d"}`,cursor:"pointer",flexShrink:0,background:"#161b22"}}>
+                      <img src={img.data} style={{width:"100%",height:"100%",objectFit:"cover"}}/>
+                      {isLinked&&<div style={{position:"absolute",top:3,right:3,background:"#3fb950",borderRadius:"50%",width:"18px",height:"18px",display:"flex",alignItems:"center",justifyContent:"center",fontSize:"11px",color:"white"}}>✓</div>}
+                      <div style={{position:"absolute",bottom:0,left:0,right:0,background:"rgba(0,0,0,0.6)",fontFamily:"monospace",fontSize:"9px",color:"#8b949e",padding:"2px 4px",textAlign:"center",overflow:"hidden",whiteSpace:"nowrap",textOverflow:"ellipsis"}}>{img.label||`画像${idx+1}`}</div>
+                    </div>
+                  );
+                })}
+              </div>
+              <button onClick={()=>setShowImagePicker(false)} style={{marginTop:"16px",padding:"8px 24px",background:"transparent",color:"#f85149",border:"1px solid #f85149",borderRadius:"8px",fontFamily:"monospace",fontSize:"13px",cursor:"pointer"}}>閉じる</button>
+            </div>
+          )}
+          {/* Adjust overlay inside card mode */}
+          {showAdjust&&cur&&(
+            <div style={{position:"absolute",inset:0,zIndex:10,background:"rgba(0,0,0,0.92)",overflow:"hidden",touchAction:"none"}}
+              onTouchStart={onAdjTouchStart} onTouchMove={onAdjTouchMove} onTouchEnd={()=>{adjTouchRef.current={};}}>
+              <img src={cur.data} style={{position:"absolute",width:"100%",top:0,left:0,transformOrigin:"top center",transform:`scale(${adjScale}) translate(${adjOffX}px,${adjOffY}px)`,objectFit:"contain",userSelect:"none",WebkitUserSelect:"none",pointerEvents:"none"}}/>
+              <div style={{position:"absolute",top:10,left:0,right:0,textAlign:"center",fontFamily:"monospace",fontSize:"11px",color:"rgba(255,255,255,0.45)",pointerEvents:"none"}}>ピンチでズーム・ドラッグで移動</div>
+              <div style={{position:"absolute",bottom:80,left:0,right:0,display:"flex",justifyContent:"center",alignItems:"center",gap:"12px"}}>
+                <span style={{fontFamily:"monospace",fontSize:"11px",color:"rgba(255,255,255,0.5)"}}>透明度</span>
+                <button onTouchEnd={e=>{e.stopPropagation();setAdjOpacity(v=>Math.max(0.05,+(v-0.05).toFixed(2)));}} style={{padding:"6px 14px",background:"#21262d",color:"#c9d1d9",border:"1px solid #30363d",borderRadius:"6px",fontFamily:"monospace",fontSize:"14px",cursor:"pointer"}}>−</button>
+                <span style={{fontFamily:"monospace",fontSize:"12px",color:"#c9d1d9",minWidth:"36px",textAlign:"center"}}>{Math.round(adjOpacity*100)}%</span>
+                <button onTouchEnd={e=>{e.stopPropagation();setAdjOpacity(v=>Math.min(0.6,+(v+0.05).toFixed(2)));}} style={{padding:"6px 14px",background:"#21262d",color:"#c9d1d9",border:"1px solid #30363d",borderRadius:"6px",fontFamily:"monospace",fontSize:"14px",cursor:"pointer"}}>＋</button>
+              </div>
+              <div style={{position:"absolute",bottom:24,left:0,right:0,display:"flex",justifyContent:"center",gap:"16px"}}>
+                <button onTouchEnd={e=>{e.stopPropagation();setShowAdjust(false);}} style={{padding:"10px 24px",background:"#21262d",color:"#f85149",border:"1px solid #f85149",borderRadius:"8px",fontFamily:"monospace",fontSize:"15px",cursor:"pointer"}}>✕ キャンセル</button>
+                <button onTouchEnd={e=>{e.stopPropagation();confirmAdjust();}} style={{padding:"10px 24px",background:"#21262d",color:"#3fb950",border:"1px solid #3fb950",borderRadius:"8px",fontFamily:"monospace",fontSize:"15px",cursor:"pointer"}}>✓ 確定</button>
+              </div>
+            </div>
+          )}
+          {!cardDone?(
+            <>
+              <div style={{display:"flex",alignItems:"center",padding:"10px 14px",background:"#161b22",borderBottom:"1px solid #21262d",gap:"10px",flexShrink:0}}>
+                <button onClick={handleCardExit} style={{...S.btn("#f85149"),padding:"4px 12px",fontSize:"12px"}}>✕ 中断</button>
+                <div style={{flex:1,textAlign:"center",fontFamily:"monospace",fontSize:"12px",color:"#8b949e"}}>{cardPos+1} / {cardSession.length}</div>
+                <button onClick={()=>setShowImages(v=>!v)} style={{padding:"4px 8px",fontSize:"12px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${showImages&&cur?"#d29922":"#30363d"}`,background:showImages&&cur?"#1a1500":"none",color:showImages&&cur?"#d29922":"#8b949e",fontFamily:"monospace"}}>🖼</button>
+                {showImages&&(<>
+                  <button onClick={()=>fileInputRef.current.click()} style={{...S.btn("#3fb950"),padding:"3px 8px",fontSize:"11px"}}>＋</button>
+                  <button onClick={openAdjust} disabled={!cur} style={{...S.btn("#58a6ff"),padding:"3px 8px",fontSize:"16px",opacity:cur?1:0.35}}>🖌️</button>
+                </>)}
+                <button onClick={()=>setShowImagePicker(v=>!v)} style={{padding:"4px 8px",fontSize:"12px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${cardImageMap[cardSession[cardPos]?.id]!==undefined?"#3fb950":"#30363d"}`,background:cardImageMap[cardSession[cardPos]?.id]!==undefined?"#0d2414":"none",color:cardImageMap[cardSession[cardPos]?.id]!==undefined?"#3fb950":"#8b949e",fontFamily:"monospace"}}>🔗</button>
+                <button onClick={()=>setCardShuffled(v=>!v)} style={{padding:"4px 10px",fontSize:"12px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${cardShuffled?"#58a6ff":"#30363d"}`,background:cardShuffled?"#0d1f3c":"none",color:cardShuffled?"#58a6ff":"#8b949e",fontFamily:"monospace"}}>🔀</button>
+              </div>
+              <div style={{flex:1,display:"flex",flexDirection:"column",padding:"16px",overflowY:"auto"}}>
+                <div style={{flex:1,position:"relative",display:"flex",flexDirection:"column"}}>
+                  {showImages&&cur&&(
+                    <div style={{position:"absolute",inset:0,overflow:"hidden",pointerEvents:"none",zIndex:0,borderRadius:"8px"}}>
+                      <img src={cur.data} style={{position:"absolute",width:"100%",top:0,left:0,opacity:bgOpacity,transformOrigin:"top center",transform:`scale(${bgScale}) translate(${bgOffX}px,${bgOffY}px)`,objectFit:"contain",userSelect:"none"}}/>
+                    </div>
+                  )}
+                  <textarea value={cardEdit} onChange={handleCardEditChange} onFocus={()=>{if(!isRecordingRef.current)startRecording();}}
+                    style={{flex:1,width:"100%",minHeight:"220px",background:"transparent",border:"1px solid #30363d",borderRadius:"8px",color:"#e0dbd0",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:"15px",lineHeight:"2",padding:"16px",resize:"none",outline:"none",boxSizing:"border-box",position:"relative",zIndex:1,textShadow:"0 0 8px #161b22,0 0 4px #161b22,0 1px 2px #161b22"}}/>
+                </div>
+              </div>
+              <div style={{padding:"12px 16px 28px",flexShrink:0,background:"#161b22",borderTop:"1px solid #21262d"}}>
+                <button onClick={handleCardComplete} style={{width:"100%",padding:"14px",background:"#1f6feb",color:"white",border:"none",borderRadius:"10px",fontSize:"16px",fontWeight:"bold",cursor:"pointer",letterSpacing:"0.05em",fontFamily:"-apple-system,system-ui,sans-serif"}}>校正完了！→</button>
+              </div>
+              {cardConfirm&&(
+                <div style={{position:"absolute",inset:0,background:"rgba(0,0,0,0.82)",display:"flex",alignItems:"center",justifyContent:"center",padding:"24px",zIndex:10}}>
+                  <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:"12px",padding:"20px",width:"100%",maxWidth:"320px"}}>
+                    {cardConfirm==='exit'&&<>
+                      <div style={{color:"#e0dbd0",fontFamily:"monospace",fontSize:"13px",marginBottom:"16px",textAlign:"center",lineHeight:"1.7"}}>編集内容があります。<br/>反映して中断しますか？</div>
+                      <div style={{display:"flex",flexDirection:"column",gap:"8px"}}>
+                        <button onClick={()=>{applyAllChanges();setCardMode(false);}} style={{padding:"12px",background:"#1f6feb",color:"white",border:"none",borderRadius:"8px",fontSize:"14px",cursor:"pointer"}}>反映して中断</button>
+                        <button onClick={()=>setCardMode(false)} style={{padding:"12px",background:"#21262d",color:"#8b949e",border:"1px solid #30363d",borderRadius:"8px",fontSize:"14px",cursor:"pointer"}}>反映せずに中断</button>
+                        <button onClick={()=>setCardConfirm(null)} style={{padding:"12px",background:"transparent",color:"#f85149",border:"1px solid #f85149",borderRadius:"8px",fontSize:"14px",cursor:"pointer"}}>カードに戻る</button>
+                      </div>
+                    </>}
+                    {cardConfirm==='newpara'&&<>
+                      <div style={{color:"#e0dbd0",fontFamily:"monospace",fontSize:"13px",marginBottom:"16px",textAlign:"center",lineHeight:"1.8"}}>段落が増えています。<br/>カードモードを終了してから<br/>本文に反映してください。</div>
+                      <button onClick={()=>setCardConfirm(null)} style={{width:"100%",padding:"12px",background:"transparent",color:"#f85149",border:"1px solid #f85149",borderRadius:"8px",fontSize:"14px",cursor:"pointer"}}>カードに戻る</button>
+                    </>}
+                  </div>
+                </div>
+              )}
+            </>
+          ):(
+            <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"32px",gap:"20px"}}>
+              <div style={{fontSize:"52px"}}>{cardQueue.length===0?"🎊":"🎉"}</div>
+              <div style={{color:"#e0dbd0",fontSize:"20px",fontWeight:"bold",textAlign:"center",fontFamily:"-apple-system,system-ui,sans-serif"}}>{cardQueue.length===0?"ラウンド完了！":"お疲れ様でした！"}</div>
+              <div style={{color:"#8b949e",fontFamily:"monospace",fontSize:"12px",textAlign:"center",lineHeight:"1.7"}}>
+                {cardQueue.length===0
+                  ?`全${getAllParas().length}段落を一巡しました`
+                  :`残り ${cardQueue.length} / ${getAllParas().length} 段落`}
+              </div>
+              <div style={{display:"flex",flexDirection:"column",gap:"10px",width:"100%",maxWidth:"280px",marginTop:"8px"}}>
+                <button onClick={()=>{applyAllChanges();setCardMode(false);}} style={{padding:"14px",background:"#1f6feb",color:"white",border:"none",borderRadius:"10px",fontSize:"15px",cursor:"pointer",fontWeight:"bold",fontFamily:"-apple-system,system-ui,sans-serif"}}>変更を反映して終了</button>
+                <button onClick={()=>{applyAllChanges();enterCardMode();}} style={{padding:"14px",background:"#21262d",color:"#c9d1d9",border:"1px solid #30363d",borderRadius:"10px",fontSize:"15px",cursor:"pointer",fontFamily:"-apple-system,system-ui,sans-serif"}}>反映してもう4枚</button>
+                <button onClick={()=>setCardMode(false)} style={{padding:"10px",background:"transparent",color:"#8b949e",border:"none",fontSize:"13px",cursor:"pointer",fontFamily:"-apple-system,system-ui,sans-serif"}}>反映せずに終了</button>
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
