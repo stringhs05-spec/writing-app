@@ -180,6 +180,16 @@ function WritingApp(){
   const [paraFlags,setParaFlags]=useState(()=>{try{const s=localStorage.getItem('writing_app_paraflags_v1');return s?JSON.parse(s):{};}catch(e){return{};}});
   // Card proof mode
   const [cardMode,setCardMode]=useState(false);
+  const [judgeMode,setJudgeMode]=useState(false);
+  const [judgeBefore,setJudgeBefore]=useState('');
+  const [judgeComment,setJudgeComment]=useState('');
+  const [judgeAfter,setJudgeAfter]=useState('');
+  const [judgeResult,setJudgeResult]=useState(null);
+  const [judging,setJudging]=useState(false);
+  const [judgeToken]=useState(()=>{
+    try{return localStorage.getItem('wapp_jt')||'';}catch(e){return '';}
+  });
+  const [judgeTokenInput,setJudgeTokenInput]=useState('');
   const [cardSession,setCardSession]=useState([]);
   const [cardPos,setCardPos]=useState(0);
   const [cardEdit,setCardEdit]=useState('');
@@ -641,8 +651,26 @@ function WritingApp(){
     else{const n=cardPos+1;setCardPos(n);setCardEdit(cardSession[n].text);applyCurCardImage(cardSession,n,cardImageMap);}
   };
   const handleCardComplete=advanceCard;
-  const handleCardExit=()=>{
-    saveCurrentEdit();
+  const submitJudgment=async()=>{
+    if(!judgeBefore.trim()||!judgeComment.trim()||!judgeAfter.trim())return;
+    const tk=localStorage.getItem('wapp_jt')||'';
+    if(!tk)return;
+    setJudging(true);setJudgeResult(null);
+    try{
+      const r=await fetch('https://nd-timer.stringhs05.workers.dev/proofread-judge',{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({t:tk,before:judgeBefore,comment:judgeComment,after:judgeAfter})
+      });
+      const d=await r.json();
+      setJudgeResult(d);
+    }catch(e){setJudgeResult({passed:false,judgment:'通信エラーが発生しました。'});}
+    setJudging(false);
+  };
+  const saveJudgeToken=()=>{
+    try{localStorage.setItem('wapp_jt',judgeTokenInput);}catch(e){}
+    window.location.reload();
+  };
+  const handleCardExit=()=>{    saveCurrentEdit();
     if(sessionHasDirty()||cardHasChanges()){setCardConfirm('exit');return;}
     setCardMode(false);
   };
@@ -786,6 +814,7 @@ function WritingApp(){
           <button style={S.overviewBtn(showOverview)} onClick={()=>{setShowOverview(v=>!v);setShowPara(false);if(!showOverview)sound('paraOn');else sound('paraOff');}}>≡</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} onClick={()=>enterCardMode()}>🃏</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} title="カーソル位置の段落をカードで編集" onClick={openCurrentParaAsCard}>¶</button>
+          <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${judgeMode?"#d29922":"#30363d"}`,background:judgeMode?"#1a1500":"none",color:judgeMode?"#d29922":"#8b949e",fontFamily:"monospace"}} onClick={()=>setJudgeMode(v=>!v)}>⚖️</button>
           <button style={S.imgBtn(showImages)} onClick={()=>setShowImages(v=>!v)}>🖼</button>
           <button style={{...S.logBtn,border:showSearch?"1px solid #58a6ff":"1px solid #30363d",color:showSearch?"#58a6ff":"#8b949e"}} onClick={()=>setShowSearch(v=>{if(!v)setTimeout(()=>searchInputRef.current?.focus(),50);return!v;})}>🔍</button>
           <button style={{...S.logBtn,color:soundEnabled?"#8b949e":"#484f58"}} onClick={()=>setSoundEnabled(v=>{const n=!v;try{localStorage.setItem('writing_app_sound',n?'on':'off');}catch(e){}if(n)setTimeout(_resetAudioCtx,50);return n;})}>{soundEnabled?"🔊":"🔇"}</button>
@@ -1029,7 +1058,56 @@ function WritingApp(){
           </div>
         </div>
       )}
-      {/* ── Card Proof Mode Overlay ── */}
+      {/* ── Judge Overlay ── */}
+      {judgeMode&&(
+        <div style={{position:"absolute",inset:0,zIndex:210,background:"#0d1117",display:"flex",flexDirection:"column",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif'}}>
+          <div style={{display:"flex",alignItems:"center",padding:"10px 14px",background:"#161b22",borderBottom:"1px solid #21262d",gap:"10px",flexShrink:0}}>
+            <button onClick={()=>{setJudgeMode(false);setJudgeResult(null);}} style={{...S.btn("#f85149"),padding:"4px 12px",fontSize:"12px"}}>✕ 閉じる</button>
+            <div style={{flex:1,textAlign:"center",fontFamily:"monospace",fontSize:"12px",color:"#8b949e"}}>推敲判定</div>
+          </div>
+          {!judgeToken?(
+            <div style={{flex:1,display:"flex",flexDirection:"column",alignItems:"center",justifyContent:"center",padding:"32px",gap:"16px"}}>
+              <div style={{color:"#8b949e",fontFamily:"monospace",fontSize:"12px",textAlign:"center"}}>初回設定：トークンを入力してください</div>
+              <input value={judgeTokenInput} onChange={e=>setJudgeTokenInput(e.target.value)} type="password" style={{width:"100%",maxWidth:"300px",padding:"10px",background:"#161b22",border:"1px solid #30363d",borderRadius:"8px",color:"#e0dbd0",fontFamily:"monospace",fontSize:"13px",outline:"none"}}/>
+              <button onClick={saveJudgeToken} disabled={!judgeTokenInput.trim()} style={{padding:"10px 28px",background:"#1f6feb",color:"white",border:"none",borderRadius:"8px",fontFamily:"monospace",fontSize:"14px",cursor:"pointer",opacity:judgeTokenInput.trim()?1:0.4}}>設定する</button>
+            </div>
+          ):(
+            <div style={{flex:1,display:"flex",flexDirection:"column",padding:"16px",gap:"12px",overflowY:"auto"}}>
+              <div style={{fontFamily:"monospace",fontSize:"10px",color:"#8b949e",lineHeight:"1.7"}}>
+                Claudeに「3点セットをまとめて示してください」と依頼し、出力をそのまま貼り付けてください。
+              </div>
+              <textarea
+                value={judgeBefore}
+                onChange={e=>{
+                  const v=e.target.value;
+                  setJudgeBefore(v);
+                  const mBefore=v.match(/\[前\]\s*([\s\S]*?)\s*\[コメント\]/);
+                  const mComment=v.match(/\[コメント\]\s*([\s\S]*?)\s*\[後\]/);
+                  const mAfter=v.match(/\[後\]\s*([\s\S]*?)$/);
+                  if(mBefore&&mComment&&mAfter){
+                    setJudgeBefore(mBefore[1].trim());
+                    setJudgeComment(mComment[1].trim());
+                    setJudgeAfter(mAfter[1].trim());
+                  }
+                }}
+                placeholder={"[前]\n修正前の段落\n\n[コメント]\nコメント\n\n[後]\n修正後の段落"}
+                style={{flex:1,width:"100%",minHeight:"260px",background:"#161b22",border:"1px solid #30363d",borderRadius:"6px",color:"#e0dbd0",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:"13px",lineHeight:"1.8",padding:"10px",resize:"vertical",outline:"none"}}/>
+              {judgeComment&&judgeAfter&&(
+                <div style={{fontFamily:"monospace",fontSize:"10px",color:"#3fb950"}}>✓ 3点セット認識済み</div>
+              )}
+              <button onClick={submitJudgment} disabled={judging||!judgeComment.trim()||!judgeAfter.trim()} style={{width:"100%",padding:"14px",background:judging?"#21262d":"#1f6feb",color:"white",border:"none",borderRadius:"10px",fontSize:"15px",fontWeight:"bold",cursor:"pointer",opacity:(judging||!judgeComment.trim()||!judgeAfter.trim())?0.5:1,fontFamily:"-apple-system,system-ui,sans-serif"}}>
+                {judging?"判定中…":"⚖️ 判定する"}
+              </button>
+              {judgeResult&&(
+                <div style={{padding:"16px",background:judgeResult.passed?"#0d2414":"#1a0a0a",border:`1px solid ${judgeResult.passed?"#3fb950":"#f85149"}`,borderRadius:"10px"}}>
+                  <div style={{fontSize:"20px",textAlign:"center",marginBottom:"8px"}}>{judgeResult.passed?"🎉 合格":"❌ 不合格"}</div>
+                  <div style={{color:"#e0dbd0",fontFamily:"monospace",fontSize:"12px",lineHeight:"1.7"}}>{judgeResult.judgment}</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      )}
       {cardMode&&(
         <div style={{position:"absolute",inset:0,zIndex:200,background:"#0d1117",display:"flex",flexDirection:"column",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif'}}>
           {/* Image picker overlay */}
