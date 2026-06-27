@@ -181,6 +181,7 @@ function WritingApp(){
   // Card proof mode
   const [cardMode,setCardMode]=useState(false);
   const [judgeMode,setJudgeMode]=useState(false);
+  const [judgeRaw,setJudgeRaw]=useState('');
   const [judgeBefore,setJudgeBefore]=useState('');
   const [judgeComment,setJudgeComment]=useState('');
   const [judgeAfter,setJudgeAfter]=useState('');
@@ -1077,10 +1078,10 @@ function WritingApp(){
                 Claudeに「3点セットをまとめて示してください」と依頼し、出力をそのまま貼り付けてください。
               </div>
               <textarea
-                value={judgeBefore}
+                value={judgeRaw}
                 onChange={e=>{
                   const v=e.target.value;
-                  setJudgeBefore(v);
+                  setJudgeRaw(v);
                   const mBefore=v.match(/\[前\]\s*([\s\S]*?)\s*\[コメント\]/);
                   const mComment=v.match(/\[コメント\]\s*([\s\S]*?)\s*\[後\]/);
                   const mAfter=v.match(/\[後\]\s*([\s\S]*?)$/);
@@ -1088,6 +1089,8 @@ function WritingApp(){
                     setJudgeBefore(mBefore[1].trim());
                     setJudgeComment(mComment[1].trim());
                     setJudgeAfter(mAfter[1].trim());
+                  } else {
+                    setJudgeBefore('');setJudgeComment('');setJudgeAfter('');
                   }
                 }}
                 placeholder={"[前]\n修正前の段落\n\n[コメント]\nコメント\n\n[後]\n修正後の段落"}
