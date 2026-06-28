@@ -214,6 +214,11 @@ function WritingApp(){
   const [syncing,setSyncing]=useState(false);
   const [syncStatus,setSyncStatus]=useState('');
   const [cloudDocs,setCloudDocs]=useState([]);
+  // Editor width
+  const WIDTH_STEPS=[400,500,600,700,800,900,1000,1200,99999];
+  const [editorWidthIdx,setEditorWidthIdx]=useState(()=>{try{return parseInt(localStorage.getItem('wapp_editor_width_idx')||String(WIDTH_STEPS.length-1));}catch(e){return WIDTH_STEPS.length-1;}});
+  useEffect(()=>{try{localStorage.setItem('wapp_editor_width_idx',String(editorWidthIdx));}catch(e){};},[editorWidthIdx]);
+  const editorMaxWidth=WIDTH_STEPS[editorWidthIdx];
   // Card proof mode
   const [cardMode,setCardMode]=useState(false);
   const [judgeMode,setJudgeMode]=useState(false);
@@ -950,6 +955,8 @@ function WritingApp(){
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} title="カーソル位置の段落をカードで編集" onClick={openCurrentParaAsCard}>¶</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${judgeMode?"#d29922":"#30363d"}`,background:judgeMode?"#1a1500":"none",color:judgeMode?"#d29922":"#8b949e",fontFamily:"monospace"}} onClick={()=>setJudgeMode(v=>!v)}>⚖️</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${syncMode?"#58a6ff":"#30363d"}`,background:syncMode?"#0d1f3c":"none",color:syncMode?"#58a6ff":"#8b949e",fontFamily:"monospace"}} onClick={()=>{setSyncMode(v=>!v);if(!syncMode)listCloudDocs();}}>☁️</button>
+          <button onClick={()=>setEditorWidthIdx(i=>Math.max(0,i-1))} disabled={editorWidthIdx===0} style={{...S.btn("#8b949e"),padding:"3px 7px",opacity:editorWidthIdx===0?0.3:1,fontSize:"11px"}}>←</button>
+          <button onClick={()=>setEditorWidthIdx(i=>Math.min(WIDTH_STEPS.length-1,i+1))} disabled={editorWidthIdx===WIDTH_STEPS.length-1} style={{...S.btn("#8b949e"),padding:"3px 7px",opacity:editorWidthIdx===WIDTH_STEPS.length-1?0.3:1,fontSize:"11px"}}>→</button>
           <button style={S.imgBtn(showImages)} onClick={()=>setShowImages(v=>!v)}>🖼</button>
           <button style={{...S.logBtn,border:showSearch?"1px solid #58a6ff":"1px solid #30363d",color:showSearch?"#58a6ff":"#8b949e"}} onClick={()=>setShowSearch(v=>{if(!v)setTimeout(()=>searchInputRef.current?.focus(),50);return!v;})}>🔍</button>
           <button style={{...S.logBtn,color:soundEnabled?"#8b949e":"#484f58"}} onClick={()=>setSoundEnabled(v=>{const n=!v;try{localStorage.setItem('writing_app_sound',n?'on':'off');}catch(e){}if(n)setTimeout(_resetAudioCtx,50);return n;})}>{soundEnabled?"🔊":"🔇"}</button>
@@ -1149,7 +1156,8 @@ function WritingApp(){
           </div>
         </>
       ):(
-        <div style={{flex:1,display:"flex",flexDirection:"column",position:"relative",overflow:"hidden",minHeight:0}}>
+        <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden",minHeight:0,alignItems:"center"}}>
+        <div style={{width:"100%",maxWidth:editorMaxWidth===99999?"100%":editorMaxWidth+"px",flex:1,display:"flex",flexDirection:"column",position:"relative",overflow:"hidden",minHeight:0}}>
           {showImages&&cur&&(
             <div style={{position:"absolute",inset:0,overflow:"hidden",pointerEvents:"none",zIndex:0}}>
               <img src={cur.data} style={{position:"absolute",width:"100%",top:0,left:0,opacity:bgOpacity,transformOrigin:"top center",transform:`scale(${bgScale}) translate(${bgOffX}px,${bgOffY}px)`,objectFit:"contain",userSelect:"none"}}/>
@@ -1190,6 +1198,7 @@ function WritingApp(){
           <div style={S.statusBar}>
             <span style={{display:"flex",alignItems:"center"}}>{isRecording&&<span style={S.recDot}/>}{isRecording?`記録中 ${fmtTime(elapsed)}`:restored?"↩ 前回を復元":"待機中"}</span>
             <span>{wc(text)} 語 ｜ {text.split('\n').length} 行</span>
+          </div>
           </div>
         </div>
       )}
@@ -1254,7 +1263,7 @@ function WritingApp(){
                   return(
                     <div key={doc.key} style={{padding:"10px 0",borderBottom:"1px solid #21262d"}}>
                       <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"4px"}}>
-                        <div style={{flex:1,fontFamily:"monospace",fontSize:"11px",color:"#c9d1d9",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{doc.key}</div>
+                        <div style={{flex:1,fontFamily:"monospace",fontSize:"11px",color:"#c9d1d9",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{doc.title||doc.key}</div>
                         <button onClick={()=>downloadFromCloud(doc.key)} disabled={syncing} style={{...S.btn("#3fb950"),padding:"3px 10px",fontSize:"11px",opacity:syncing?0.5:1,flexShrink:0}}>取得</button>
                       </div>
                       <div style={{fontFamily:"monospace",fontSize:"10px",color:"#58a6ff"}}>☁️ {fmt}</div>
@@ -1374,14 +1383,16 @@ function WritingApp(){
                 <button onClick={()=>setCardShuffled(v=>!v)} style={{padding:"4px 10px",fontSize:"12px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${cardShuffled?"#58a6ff":"#30363d"}`,background:cardShuffled?"#0d1f3c":"none",color:cardShuffled?"#58a6ff":"#8b949e",fontFamily:"monospace"}}>🔀</button>
               </div>
               <div style={{flex:1,display:"flex",flexDirection:"column",padding:"16px",overflowY:"auto"}}>
-                <div style={{flex:1,position:"relative",display:"flex",flexDirection:"column"}}>
-                  {showImages&&cur&&(
-                    <div style={{position:"absolute",inset:0,overflow:"hidden",pointerEvents:"none",zIndex:0,borderRadius:"8px"}}>
-                      <img src={cur.data} style={{position:"absolute",width:"100%",top:0,left:0,opacity:bgOpacity,transformOrigin:"top center",transform:`scale(${bgScale}) translate(${bgOffX}px,${bgOffY}px)`,objectFit:"contain",userSelect:"none"}}/>
-                    </div>
-                  )}
-                  <textarea value={cardEdit} onChange={handleCardEditChange} onFocus={()=>{if(!isRecordingRef.current)startRecording();}}
-                    style={{flex:1,width:"100%",minHeight:"220px",background:"transparent",border:"1px solid #30363d",borderRadius:"8px",color:"#e0dbd0",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:"15px",lineHeight:"2",padding:"16px",resize:"none",outline:"none",boxSizing:"border-box",position:"relative",zIndex:1,textShadow:"0 0 8px #161b22,0 0 4px #161b22,0 1px 2px #161b22"}}/>
+                <div style={{width:"100%",maxWidth:editorMaxWidth===99999?"100%":editorMaxWidth+"px",margin:"0 auto",flex:1,display:"flex",flexDirection:"column"}}>
+                  <div style={{flex:1,position:"relative",display:"flex",flexDirection:"column"}}>
+                    {showImages&&cur&&(
+                      <div style={{position:"absolute",inset:0,overflow:"hidden",pointerEvents:"none",zIndex:0,borderRadius:"8px"}}>
+                        <img src={cur.data} style={{position:"absolute",width:"100%",top:0,left:0,opacity:bgOpacity,transformOrigin:"top center",transform:`scale(${bgScale}) translate(${bgOffX}px,${bgOffY}px)`,objectFit:"contain",userSelect:"none"}}/>
+                      </div>
+                    )}
+                    <textarea value={cardEdit} onChange={handleCardEditChange} onFocus={()=>{if(!isRecordingRef.current)startRecording();}}
+                      style={{flex:1,width:"100%",minHeight:"220px",background:"transparent",border:"1px solid #30363d",borderRadius:"8px",color:"#e0dbd0",fontFamily:'Georgia,"Hiragino Mincho ProN","Yu Mincho",serif',fontSize:`${fontSize}px`,lineHeight:"2",padding:"16px",resize:"none",outline:"none",boxSizing:"border-box",position:"relative",zIndex:1,textShadow:"0 0 8px #161b22,0 0 4px #161b22,0 1px 2px #161b22"}}/>
+                  </div>
                 </div>
               </div>
               <div style={{padding:"12px 16px 28px",flexShrink:0,background:"#161b22",borderTop:"1px solid #21262d"}}>
