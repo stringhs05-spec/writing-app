@@ -1248,13 +1248,19 @@ function WritingApp(){
               <div style={{fontFamily:"monospace",fontSize:"10px",color:"#8b949e",marginBottom:"8px"}}>クラウドの文書一覧</div>
               {cloudDocs.length===0
                 ?<div style={{fontFamily:"monospace",fontSize:"11px",color:"#484f58"}}>なし</div>
-                :cloudDocs.map(doc=>(
-                  <div key={doc.key} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 0",borderBottom:"1px solid #21262d"}}>
-                    <div style={{flex:1,fontFamily:"monospace",fontSize:"11px",color:"#c9d1d9",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{doc.key}</div>
-                    <div style={{fontFamily:"monospace",fontSize:"9px",color:"#484f58"}}>{new Date(doc.uploaded).toLocaleDateString('ja-JP')}</div>
-                    <button onClick={()=>downloadFromCloud(doc.key)} disabled={syncing} style={{...S.btn("#3fb950"),padding:"3px 10px",fontSize:"11px",opacity:syncing?0.5:1}}>取得</button>
-                  </div>
-                ))
+                :cloudDocs.map(doc=>{
+                  const dt=new Date(doc.uploaded);
+                  const fmt=`${dt.getFullYear()}/${String(dt.getMonth()+1).padStart(2,'0')}/${String(dt.getDate()).padStart(2,'0')} ${String(dt.getHours()).padStart(2,'0')}:${String(dt.getMinutes()).padStart(2,'0')}:${String(dt.getSeconds()).padStart(2,'0')}`;
+                  return(
+                    <div key={doc.key} style={{padding:"10px 0",borderBottom:"1px solid #21262d"}}>
+                      <div style={{display:"flex",alignItems:"center",gap:"8px",marginBottom:"4px"}}>
+                        <div style={{flex:1,fontFamily:"monospace",fontSize:"11px",color:"#c9d1d9",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{doc.key}</div>
+                        <button onClick={()=>downloadFromCloud(doc.key)} disabled={syncing} style={{...S.btn("#3fb950"),padding:"3px 10px",fontSize:"11px",opacity:syncing?0.5:1,flexShrink:0}}>取得</button>
+                      </div>
+                      <div style={{fontFamily:"monospace",fontSize:"10px",color:"#58a6ff"}}>☁️ {fmt}</div>
+                    </div>
+                  );
+                })
               }
             </div>
           </div>
