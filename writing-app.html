@@ -93,12 +93,41 @@ function AutoTA({value,onChange,onKeyDown,onCompositionStart,onCompositionEnd,on
   return(<textarea ref={ref} onFocus={()=>{focused.current=true;}} onBlur={()=>{focused.current=false;}} onChange={e=>{resize();onChange(e);}} onKeyDown={onKeyDown} onCompositionStart={onCompositionStart} onCompositionEnd={onCompositionEnd} onSelect={onSelect} placeholder={placeholder} style={{display:'block',width:'100%',resize:'none',overflow:'hidden',border:'none',outline:'none',background:'transparent',...style}}/>);
 }
 
+// ── Document management ────────────────────────────────────────
+const _DOCS_KEY='writing_app_docs_v1';
+const _CURRENT_DOC_KEY='writing_app_current_doc_v1';
+const _DOC_ID=(()=>{
+  try{
+    let id=localStorage.getItem(_CURRENT_DOC_KEY);
+    if(id)return id;
+    id='doc_'+(Date.now()+'');
+    const docs=[{id,title:'文書1',created:Date.now(),lastModified:Date.now()}];
+    localStorage.setItem(_DOCS_KEY,JSON.stringify(docs));
+    localStorage.setItem(_CURRENT_DOC_KEY,id);
+    for(const k of['writing_app_v1','writing_app_img_settings_v1','writing_app_card_queue_v1','writing_app_card_image_map_v1','writing_app_paraflags_v1']){
+      const v=localStorage.getItem(k);if(v)localStorage.setItem(k+'_'+id,v);
+    }
+    return id;
+  }catch(e){return'doc_default';}
+})();
+
+// ── IndexedDB for images ───────────────────────────────────────
+const _openImgDB=()=>new Promise((res,rej)=>{
+  const r=indexedDB.open('writing_app_img_db_v1',1);
+  r.onupgradeneeded=e=>{const db=e.target.result;if(!db.objectStoreNames.contains('doc_images'))db.createObjectStore('doc_images');};
+  r.onsuccess=e=>res(e.target.result);r.onerror=rej;
+});
+const _loadImgsDB=async id=>{try{const db=await _openImgDB();return await new Promise((res,rej)=>{const tx=db.transaction('doc_images','readonly');const req=tx.objectStore('doc_images').get(id);req.onsuccess=e=>res(e.target.result||[]);req.onerror=rej;});}catch(e){return[];}};
+const _saveImgsDB=async(id,imgs)=>{try{const db=await _openImgDB();await new Promise((res,rej)=>{const tx=db.transaction('doc_images','readwrite');const req=tx.objectStore('doc_images').put(imgs,id);req.onsuccess=res;req.onerror=rej;});}catch(e){}};
+const _deleteImgsDB=async id=>{try{const db=await _openImgDB();await new Promise((res,rej)=>{const tx=db.transaction('doc_images','readwrite');const req=tx.objectStore('doc_images').delete(id);req.onsuccess=res;req.onerror=rej;});}catch(e){}};
+
 // ── Main App ───────────────────────────────────────────────────
 function WritingApp(){
-  const STORAGE_KEY="writing_app_v1";
-  const IMG_KEY="writing_app_images_v1";
-  const IMG_SETTINGS_KEY="writing_app_img_settings_v1";
-  const CARD_QUEUE_KEY="writing_app_card_queue_v1";
+  const STORAGE_KEY=`writing_app_v1_${_DOC_ID}`;
+  const IMG_SETTINGS_KEY=`writing_app_img_settings_v1_${_DOC_ID}`;
+  const CARD_QUEUE_KEY=`writing_app_card_queue_v1_${_DOC_ID}`;
+  const CARD_IMAGE_MAP_KEY=`writing_app_card_image_map_v1_${_DOC_ID}`;
+  const PARA_FLAGS_KEY=`writing_app_paraflags_v1_${_DOC_ID}`;
 
   const [text,setText]=useState("");
   const [showPara,setShowPara]=useState(false);
@@ -177,7 +206,7 @@ function WritingApp(){
   const [highlightedParaBi,setHighlightedParaBi]=useState(null);
   const [jumpFlash,setJumpFlash]=useState(null);
   const [targetParaBi,setTargetParaBi]=useState(null);
-  const [paraFlags,setParaFlags]=useState(()=>{try{const s=localStorage.getItem('writing_app_paraflags_v1');return s?JSON.parse(s):{};}catch(e){return{};}});
+  const [paraFlags,setParaFlags]=useState(()=>{try{const s=localStorage.getItem(PARA_FLAGS_KEY);return s?JSON.parse(s):{};}catch(e){return{};}});
   // Card proof mode
   const [cardMode,setCardMode]=useState(false);
   const [judgeMode,setJudgeMode]=useState(false);
@@ -198,7 +227,7 @@ function WritingApp(){
   const [cardDone,setCardDone]=useState(false);
   const [cardConfirm,setCardConfirm]=useState(null);
   const [cardQueue,setCardQueue]=useState(()=>{try{const s=localStorage.getItem('writing_app_card_queue_v1');return s?JSON.parse(s):[];}catch(e){return[];}});
-  const [cardImageMap,setCardImageMap]=useState(()=>{try{const s=localStorage.getItem('writing_app_card_image_map_v1');return s?JSON.parse(s):{};}catch(e){return{};}});
+  const [cardImageMap,setCardImageMap]=useState(()=>{try{const s=localStorage.getItem(CARD_IMAGE_MAP_KEY);return s?JSON.parse(s):{};}catch(e){return{};}});
   const [showImagePicker,setShowImagePicker]=useState(false);
 
   // Search / Replace
@@ -270,15 +299,25 @@ function WritingApp(){
 
   // Load state
   useEffect(()=>{try{const s=localStorage.getItem(STORAGE_KEY);if(!s)return;const d=JSON.parse(s);if(d.text){setText(d.text);textRef.current=d.text;displayTextRef.current=d.text;lastSnapshotRef.current=d.text;}if(d.title)setDocTitle(d.title);if(d.diffLog?.length){diffLogRef.current=d.diffLog;setDiffLog(d.diffLog);}if(d.keystrokeLog?.length){keystrokeLogRef.current=d.keystrokeLog;setKeystrokeLog(d.keystrokeLog);}if(d.sessionStart){sessionStartRef.current=d.sessionStart;setSessionStart(d.sessionStart);}if(d.initialText!==undefined)initialTextRef.current=d.initialText;setRestored(true);}catch(e){}},[]); // eslint-disable-line
-  useEffect(()=>{try{const s=localStorage.getItem(IMG_KEY);if(s){const imgs=JSON.parse(s);if(imgs.length>0)setImages(imgs);}}catch(e){}
+  useEffect(()=>{
+    _loadImgsDB(_DOC_ID).then(imgs=>{
+      if(imgs.length>0){setImages(imgs);}
+      else{
+        // Migrate from localStorage if exists
+        try{const s=localStorage.getItem('writing_app_images_v1');if(s){const old=JSON.parse(s);if(old.length>0){setImages(old);_saveImgsDB(_DOC_ID,old);}}}catch(e){}
+      }
+    });
     try{const s=localStorage.getItem(IMG_SETTINGS_KEY);if(s){const d=JSON.parse(s);if(d.showImages!==undefined)setShowImages(d.showImages);if(d.imgIdx!==undefined)setImgIdx(d.imgIdx);if(d.bgScale!==undefined)setBgScale(d.bgScale);if(d.bgOffX!==undefined)setBgOffX(d.bgOffX);if(d.bgOffY!==undefined)setBgOffY(d.bgOffY);if(d.bgOpacity!==undefined)setBgOpacity(d.bgOpacity);}}catch(e){}
     setTimeout(()=>{isInitialLoadRef.current=false;},200);
   },[]); // eslint-disable-line
   useEffect(()=>{try{localStorage.setItem(IMG_SETTINGS_KEY,JSON.stringify({showImages,imgIdx,bgScale,bgOffX,bgOffY,bgOpacity}));}catch(e){}
   },[showImages,imgIdx,bgScale,bgOffX,bgOffY,bgOpacity]);
-  const save=()=>{try{localStorage.setItem(STORAGE_KEY,JSON.stringify({sessionStart:sessionStartRef.current,initialText:initialTextRef.current,text:displayTextRef.current,title:docTitle,diffLog:diffLogRef.current,keystrokeLog:keystrokeLogRef.current,cursorPos:lastCursorPosRef.current}));}catch(e){}};
-  const saveImages=imgs=>{try{localStorage.setItem(IMG_KEY,JSON.stringify(imgs));}catch(e){alert("画像の保存に失敗しました。");}};
-  const saveFlags=f=>{try{localStorage.setItem('writing_app_paraflags_v1',JSON.stringify(f));}catch(e){}};
+  const save=()=>{
+    try{localStorage.setItem(STORAGE_KEY,JSON.stringify({sessionStart:sessionStartRef.current,initialText:initialTextRef.current,text:displayTextRef.current,title:docTitle,diffLog:diffLogRef.current,keystrokeLog:keystrokeLogRef.current,cursorPos:lastCursorPosRef.current}));}catch(e){}
+    // Update lastModified in doc list
+    try{const docs=JSON.parse(localStorage.getItem(_DOCS_KEY)||'[]');const updated=docs.map(d=>d.id===_DOC_ID?{...d,title:docTitle,lastModified:Date.now()}:d);localStorage.setItem(_DOCS_KEY,JSON.stringify(updated));}catch(e){}
+  };  const saveImages=imgs=>{_saveImgsDB(_DOC_ID,imgs).catch(()=>alert("画像の保存に失敗しました。"));};
+  const saveFlags=f=>{try{localStorage.setItem(PARA_FLAGS_KEY,JSON.stringify(f));}catch(e){}};
   const cycleFlag=(t,e)=>{e.stopPropagation();const k=flagKey(t);setParaFlags(prev=>{const cur=prev[k]||0;const next=(cur+1)%3;const u={...prev,[k]:next};saveFlags(u);return u;});};
 
   // ── Undo / Redo ────────────────────────────────────────────────
@@ -602,7 +641,7 @@ function WritingApp(){
     return shuffled?[...ids].sort(()=>Math.random()-0.5):ids;
   };
   const saveQueue=q=>{try{localStorage.setItem(CARD_QUEUE_KEY,JSON.stringify(q));}catch(e){}};
-  const saveCardImageMap=m=>{try{localStorage.setItem('writing_app_card_image_map_v1',JSON.stringify(m));}catch(e){}};
+  const saveCardImageMap=m=>{try{localStorage.setItem(CARD_IMAGE_MAP_KEY,JSON.stringify(m));}catch(e){}};
   const applyCurCardImage=(sess,pos,map)=>{
     const id=sess[pos]?.id;
     const idx=id!==undefined?map[id]:undefined;
@@ -671,7 +710,36 @@ function WritingApp(){
     try{localStorage.setItem('wapp_jt',judgeTokenInput);}catch(e){}
     window.location.reload();
   };
-  const handleCardExit=()=>{    saveCurrentEdit();
+  // ── Document management ────────────────────────────────────────
+  const [docList,setDocList]=useState(()=>{try{return JSON.parse(localStorage.getItem(_DOCS_KEY)||'[]');}catch(e){return[];}});
+  const [showDocList,setShowDocList]=useState(false);
+  const [newDocTitle,setNewDocTitle]=useState('');
+  const fmtDate=ts=>{const d=new Date(ts);return`${d.getMonth()+1}/${d.getDate()} ${d.getHours()}:${String(d.getMinutes()).padStart(2,'0')}`;};
+  const switchDoc=id=>{
+    if(id===_DOC_ID){setShowDocList(false);return;}
+    save();localStorage.setItem(_CURRENT_DOC_KEY,id);window.location.reload();
+  };
+  const createDoc=()=>{
+    if(!newDocTitle.trim())return;
+    const id='doc_'+Date.now();
+    const doc={id,title:newDocTitle.trim(),created:Date.now(),lastModified:Date.now()};
+    const newList=[...docList,doc];
+    localStorage.setItem(_DOCS_KEY,JSON.stringify(newList));
+    setDocList(newList);setNewDocTitle('');
+    localStorage.setItem(_CURRENT_DOC_KEY,id);window.location.reload();
+  };
+  const deleteDoc=id=>{
+    if(docList.length<=1||!confirm('この文書を削除しますか？'))return;
+    const newList=docList.filter(d=>d.id!==id);
+    localStorage.setItem(_DOCS_KEY,JSON.stringify(newList));
+    for(const k of['writing_app_v1','writing_app_img_settings_v1','writing_app_card_queue_v1','writing_app_card_image_map_v1','writing_app_paraflags_v1'])
+      localStorage.removeItem(k+'_'+id);
+    _deleteImgsDB(id);
+    if(id===_DOC_ID){localStorage.setItem(_CURRENT_DOC_KEY,newList[0].id);window.location.reload();}
+    else setDocList(newList);
+  };
+  const handleCardExit=()=>{
+    saveCurrentEdit();
     if(sessionHasDirty()||cardHasChanges()){setCardConfirm('exit');return;}
     setCardMode(false);
   };
@@ -813,6 +881,7 @@ function WritingApp(){
             if(!showPara)sound('paraOn');else sound('paraOff');
           }}>📐</button>
           <button style={S.overviewBtn(showOverview)} onClick={()=>{setShowOverview(v=>!v);setShowPara(false);if(!showOverview)sound('paraOn');else sound('paraOff');}}>≡</button>
+          <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${showDocList?"#58a6ff":"#30363d"}`,background:showDocList?"#0d1f3c":"none",color:showDocList?"#58a6ff":"#8b949e",fontFamily:"monospace"}} onClick={()=>setShowDocList(v=>!v)}>📂</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} onClick={()=>enterCardMode()}>🃏</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} title="カーソル位置の段落をカードで編集" onClick={openCurrentParaAsCard}>¶</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${judgeMode?"#d29922":"#30363d"}`,background:judgeMode?"#1a1500":"none",color:judgeMode?"#d29922":"#8b949e",fontFamily:"monospace"}} onClick={()=>setJudgeMode(v=>!v)}>⚖️</button>
@@ -1056,6 +1125,35 @@ function WritingApp(){
           <div style={S.statusBar}>
             <span style={{display:"flex",alignItems:"center"}}>{isRecording&&<span style={S.recDot}/>}{isRecording?`記録中 ${fmtTime(elapsed)}`:restored?"↩ 前回を復元":"待機中"}</span>
             <span>{wc(text)} 語 ｜ {text.split('\n').length} 行</span>
+          </div>
+        </div>
+      )}
+      {/* ── Document List Overlay ── */}
+      {showDocList&&(
+        <div style={{position:"absolute",inset:0,zIndex:210,background:"#0d1117",display:"flex",flexDirection:"column"}}>
+          <div style={{display:"flex",alignItems:"center",padding:"10px 14px",background:"#161b22",borderBottom:"1px solid #21262d",gap:"10px",flexShrink:0}}>
+            <button onClick={()=>setShowDocList(false)} style={{...S.btn("#f85149"),padding:"4px 12px",fontSize:"12px"}}>✕ 閉じる</button>
+            <div style={{flex:1,textAlign:"center",fontFamily:"monospace",fontSize:"12px",color:"#8b949e"}}>文書一覧</div>
+          </div>
+          <div style={{flex:1,overflowY:"auto",padding:"12px"}}>
+            {docList.map(doc=>(
+              <div key={doc.id} onClick={()=>switchDoc(doc.id)}
+                style={{display:"flex",alignItems:"center",padding:"12px 14px",marginBottom:"8px",background:doc.id===_DOC_ID?"#0d1f3c":"#161b22",border:`1px solid ${doc.id===_DOC_ID?"#58a6ff":"#30363d"}`,borderRadius:"8px",cursor:"pointer",gap:"10px"}}>
+                <div style={{flex:1}}>
+                  <div style={{color:"#e0dbd0",fontFamily:'Georgia,"Hiragino Mincho ProN",serif',fontSize:"14px",marginBottom:"3px"}}>{doc.title}</div>
+                  <div style={{color:"#484f58",fontFamily:"monospace",fontSize:"10px"}}>更新: {fmtDate(doc.lastModified)}</div>
+                </div>
+                {doc.id===_DOC_ID&&<div style={{fontFamily:"monospace",fontSize:"10px",color:"#58a6ff"}}>現在</div>}
+                {doc.id!==_DOC_ID&&<button onClick={e=>{e.stopPropagation();deleteDoc(doc.id);}} style={{padding:"3px 8px",background:"transparent",color:"#f85149",border:"1px solid #f85149",borderRadius:"4px",fontSize:"11px",cursor:"pointer",fontFamily:"monospace"}}>削除</button>}
+              </div>
+            ))}
+          </div>
+          <div style={{padding:"12px 14px 24px",background:"#161b22",borderTop:"1px solid #21262d",display:"flex",gap:"8px"}}>
+            <input value={newDocTitle} onChange={e=>setNewDocTitle(e.target.value)}
+              onKeyDown={e=>e.key==='Enter'&&createDoc()}
+              placeholder="新規文書のタイトル"
+              style={{flex:1,padding:"10px",background:"#0d1117",border:"1px solid #30363d",borderRadius:"6px",color:"#e0dbd0",fontFamily:'Georgia,"Hiragino Mincho ProN",serif',fontSize:"13px",outline:"none"}}/>
+            <button onClick={createDoc} disabled={!newDocTitle.trim()} style={{padding:"10px 16px",background:newDocTitle.trim()?"#1f6feb":"#21262d",color:"white",border:"none",borderRadius:"6px",fontSize:"13px",cursor:"pointer",opacity:newDocTitle.trim()?1:0.4,fontFamily:"-apple-system,system-ui,sans-serif"}}>作成</button>
           </div>
         </div>
       )}
