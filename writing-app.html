@@ -723,17 +723,29 @@ function WritingApp(){
       const r1=await fetch(`${WORKER_URL}/storage/load-doc`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({t:tk,docId})});
       if(!r1.ok)throw new Error('テキスト取得失敗');
       const d=await r1.json();
-      if(d.text!==undefined){setText(d.text);textRef.current=d.text;displayTextRef.current=d.text;}
-      if(d.title)setDocTitle(d.title);
-      if(d.diffLog?.length){diffLogRef.current=d.diffLog;setDiffLog(d.diffLog);}
-      if(d.keystrokeLog?.length){keystrokeLogRef.current=d.keystrokeLog;setKeystrokeLog(d.keystrokeLog);}
+      // Save under the cloud docId
+      const remoteKey=`writing_app_v1_${docId}`;
+      localStorage.setItem(remoteKey,JSON.stringify({text:d.text||'',title:d.title||'',diffLog:d.diffLog||[],keystrokeLog:d.keystrokeLog||[],cursorPos:d.cursorPos||0,lastModified:d.lastModified||Date.now()}));
+      // Save images under the cloud docId
       const r2=await fetch(`${WORKER_URL}/storage/load-images`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({t:tk,docId})});
       if(r2.ok){
         const imgData=await r2.json();
         const found=imgData.images?.find(i=>i.imgId==='all');
-        if(found){const imgs=JSON.parse(found.data);await _saveImgsDB(_DOC_ID,imgs);setImages(imgs);setImgIdx(0);}
+        if(found){const imgs=JSON.parse(found.data);await _saveImgsDB(docId,imgs);}
       }
-      setSyncStatus('✅ ダウンロード完了');
+      // Add to docList if not present, update if exists
+      const docList=JSON.parse(localStorage.getItem('writing_app_docs_v1')||'[]');
+      const existIdx=docList.findIndex(doc=>doc.id===docId);
+      if(existIdx===-1){
+        docList.push({id:docId,title:d.title||docId,created:Date.now(),lastModified:d.lastModified||Date.now()});
+      }else{
+        docList[existIdx]={...docList[existIdx],title:d.title||docList[existIdx].title,lastModified:d.lastModified||Date.now()};
+      }
+      localStorage.setItem('writing_app_docs_v1',JSON.stringify(docList));
+      // Switch to this doc
+      localStorage.setItem('writing_app_current_doc_v1',docId);
+      setSyncStatus('✅ 取得完了。切り替えます...');
+      setTimeout(()=>window.location.reload(),1000);
     }catch(e){setSyncStatus('❌ '+e.message);}
     setSyncing(false);
   };
