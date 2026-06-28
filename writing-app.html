@@ -207,6 +207,13 @@ function WritingApp(){
   const [jumpFlash,setJumpFlash]=useState(null);
   const [targetParaBi,setTargetParaBi]=useState(null);
   const [paraFlags,setParaFlags]=useState(()=>{try{const s=localStorage.getItem(PARA_FLAGS_KEY);return s?JSON.parse(s):{};}catch(e){return{};}});
+  // Cloud sync
+  const WORKER_URL='https://nd-timer.stringhs05.workers.dev';
+  const getToken=()=>localStorage.getItem('wapp_jt')||'';
+  const [syncMode,setSyncMode]=useState(false);
+  const [syncing,setSyncing]=useState(false);
+  const [syncStatus,setSyncStatus]=useState('');
+  const [cloudDocs,setCloudDocs]=useState([]);
   // Card proof mode
   const [cardMode,setCardMode]=useState(false);
   const [judgeMode,setJudgeMode]=useState(false);
@@ -691,8 +698,53 @@ function WritingApp(){
     else{const n=cardPos+1;setCardPos(n);setCardEdit(cardSession[n].text);applyCurCardImage(cardSession,n,cardImageMap);}
   };
   const handleCardComplete=advanceCard;
-  const submitJudgment=async()=>{
-    if(!judgeBefore.trim()||!judgeComment.trim()||!judgeAfter.trim())return;
+  // ── Cloud sync ────────────────────────────────────────────────
+  const uploadToCloud=async()=>{
+    const tk=getToken();if(!tk){setSyncStatus('⚠️ トークン未設定（⚖️パネルで設定してください）');return;}
+    setSyncing(true);setSyncStatus('テキストをアップロード中...');
+    try{
+      const docData={text:textRef.current,title:docTitle,diffLog:diffLogRef.current,keystrokeLog:keystrokeLogRef.current,cursorPos:lastCursorPosRef.current,lastModified:Date.now()};
+      const r1=await fetch(`${WORKER_URL}/storage/save-doc`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({t:tk,docId:_DOC_ID,data:docData})});
+      if(!r1.ok)throw new Error('テキスト保存失敗');
+      setSyncStatus('画像をアップロード中...');
+      const imgs=await _loadImgsDB(_DOC_ID);
+      if(imgs.length>0){
+        const r2=await fetch(`${WORKER_URL}/storage/save-image`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({t:tk,docId:_DOC_ID,imgId:'all',data:JSON.stringify(imgs)})});
+        if(!r2.ok)throw new Error('画像保存失敗');
+      }
+      setSyncStatus(`✅ アップロード完了（画像${imgs.length}枚）`);
+    }catch(e){setSyncStatus('❌ '+e.message);}
+    setSyncing(false);
+  };
+  const downloadFromCloud=async(docId)=>{
+    const tk=getToken();if(!tk){setSyncStatus('⚠️ トークン未設定');return;}
+    setSyncing(true);setSyncStatus('ダウンロード中...');
+    try{
+      const r1=await fetch(`${WORKER_URL}/storage/load-doc`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({t:tk,docId})});
+      if(!r1.ok)throw new Error('テキスト取得失敗');
+      const d=await r1.json();
+      if(d.text!==undefined){setText(d.text);textRef.current=d.text;displayTextRef.current=d.text;}
+      if(d.title)setDocTitle(d.title);
+      if(d.diffLog?.length){diffLogRef.current=d.diffLog;setDiffLog(d.diffLog);}
+      if(d.keystrokeLog?.length){keystrokeLogRef.current=d.keystrokeLog;setKeystrokeLog(d.keystrokeLog);}
+      const r2=await fetch(`${WORKER_URL}/storage/load-images`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({t:tk,docId})});
+      if(r2.ok){
+        const imgData=await r2.json();
+        const found=imgData.images?.find(i=>i.imgId==='all');
+        if(found){const imgs=JSON.parse(found.data);await _saveImgsDB(_DOC_ID,imgs);setImages(imgs);setImgIdx(0);}
+      }
+      setSyncStatus('✅ ダウンロード完了');
+    }catch(e){setSyncStatus('❌ '+e.message);}
+    setSyncing(false);
+  };
+  const listCloudDocs=async()=>{
+    const tk=getToken();if(!tk)return;
+    try{
+      const r=await fetch(`${WORKER_URL}/storage/list-docs`,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({t:tk})});
+      if(r.ok){const d=await r.json();setCloudDocs(d.docs||[]);}
+    }catch(e){}
+  };
+  const submitJudgment=async()=>{    if(!judgeBefore.trim()||!judgeComment.trim()||!judgeAfter.trim())return;
     const tk=localStorage.getItem('wapp_jt')||'';
     if(!tk)return;
     setJudging(true);setJudgeResult(null);
@@ -885,6 +937,7 @@ function WritingApp(){
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} onClick={()=>enterCardMode()}>🃏</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} title="カーソル位置の段落をカードで編集" onClick={openCurrentParaAsCard}>¶</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${judgeMode?"#d29922":"#30363d"}`,background:judgeMode?"#1a1500":"none",color:judgeMode?"#d29922":"#8b949e",fontFamily:"monospace"}} onClick={()=>setJudgeMode(v=>!v)}>⚖️</button>
+          <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${syncMode?"#58a6ff":"#30363d"}`,background:syncMode?"#0d1f3c":"none",color:syncMode?"#58a6ff":"#8b949e",fontFamily:"monospace"}} onClick={()=>{setSyncMode(v=>!v);if(!syncMode)listCloudDocs();}}>☁️</button>
           <button style={S.imgBtn(showImages)} onClick={()=>setShowImages(v=>!v)}>🖼</button>
           <button style={{...S.logBtn,border:showSearch?"1px solid #58a6ff":"1px solid #30363d",color:showSearch?"#58a6ff":"#8b949e"}} onClick={()=>setShowSearch(v=>{if(!v)setTimeout(()=>searchInputRef.current?.focus(),50);return!v;})}>🔍</button>
           <button style={{...S.logBtn,color:soundEnabled?"#8b949e":"#484f58"}} onClick={()=>setSoundEnabled(v=>{const n=!v;try{localStorage.setItem('writing_app_sound',n?'on':'off');}catch(e){}if(n)setTimeout(_resetAudioCtx,50);return n;})}>{soundEnabled?"🔊":"🔇"}</button>
@@ -1154,6 +1207,37 @@ function WritingApp(){
               placeholder="新規文書のタイトル"
               style={{flex:1,padding:"10px",background:"#0d1117",border:"1px solid #30363d",borderRadius:"6px",color:"#e0dbd0",fontFamily:'Georgia,"Hiragino Mincho ProN",serif',fontSize:"13px",outline:"none"}}/>
             <button onClick={createDoc} disabled={!newDocTitle.trim()} style={{padding:"10px 16px",background:newDocTitle.trim()?"#1f6feb":"#21262d",color:"white",border:"none",borderRadius:"6px",fontSize:"13px",cursor:"pointer",opacity:newDocTitle.trim()?1:0.4,fontFamily:"-apple-system,system-ui,sans-serif"}}>作成</button>
+          </div>
+        </div>
+      )}
+      {/* ── Cloud Sync Overlay ── */}
+      {syncMode&&(
+        <div style={{position:"absolute",inset:0,zIndex:210,background:"#0d1117",display:"flex",flexDirection:"column"}}>
+          <div style={{display:"flex",alignItems:"center",padding:"10px 14px",background:"#161b22",borderBottom:"1px solid #21262d",gap:"10px",flexShrink:0}}>
+            <button onClick={()=>setSyncMode(false)} style={{...S.btn("#f85149"),padding:"4px 12px",fontSize:"12px"}}>✕ 閉じる</button>
+            <div style={{flex:1,textAlign:"center",fontFamily:"monospace",fontSize:"12px",color:"#8b949e"}}>☁️ クラウド同期</div>
+          </div>
+          <div style={{flex:1,display:"flex",flexDirection:"column",padding:"16px",gap:"14px",overflowY:"auto"}}>
+            <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:"8px",padding:"12px"}}>
+              <div style={{fontFamily:"monospace",fontSize:"10px",color:"#8b949e",marginBottom:"8px"}}>現在の文書：{docTitle}</div>
+              <button onClick={uploadToCloud} disabled={syncing} style={{width:"100%",padding:"12px",background:syncing?"#21262d":"#1f6feb",color:"white",border:"none",borderRadius:"8px",fontSize:"14px",cursor:"pointer",fontFamily:"-apple-system,system-ui,sans-serif",opacity:syncing?0.5:1}}>
+                {syncing?"処理中...":"☁️ アップロード（このデバイス→クラウド）"}
+              </button>
+            </div>
+            {syncStatus&&<div style={{fontFamily:"monospace",fontSize:"12px",color:syncStatus.startsWith("✅")?"#3fb950":syncStatus.startsWith("❌")?"#f85149":"#8b949e",padding:"8px 12px",background:"#161b22",borderRadius:"6px"}}>{syncStatus}</div>}
+            <div style={{background:"#161b22",border:"1px solid #30363d",borderRadius:"8px",padding:"12px"}}>
+              <div style={{fontFamily:"monospace",fontSize:"10px",color:"#8b949e",marginBottom:"8px"}}>クラウドの文書一覧</div>
+              {cloudDocs.length===0
+                ?<div style={{fontFamily:"monospace",fontSize:"11px",color:"#484f58"}}>なし</div>
+                :cloudDocs.map(doc=>(
+                  <div key={doc.key} style={{display:"flex",alignItems:"center",gap:"8px",padding:"6px 0",borderBottom:"1px solid #21262d"}}>
+                    <div style={{flex:1,fontFamily:"monospace",fontSize:"11px",color:"#c9d1d9",overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{doc.key}</div>
+                    <div style={{fontFamily:"monospace",fontSize:"9px",color:"#484f58"}}>{new Date(doc.uploaded).toLocaleDateString('ja-JP')}</div>
+                    <button onClick={()=>downloadFromCloud(doc.key)} disabled={syncing} style={{...S.btn("#3fb950"),padding:"3px 10px",fontSize:"11px",opacity:syncing?0.5:1}}>取得</button>
+                  </div>
+                ))
+              }
+            </div>
           </div>
         </div>
       )}
