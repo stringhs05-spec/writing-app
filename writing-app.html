@@ -195,6 +195,9 @@ function WritingApp(){
   const [isRecording,setIsRecording]=useState(false);
   const [sessionStart,setSessionStart]=useState(null);
   const [elapsed,setElapsed]=useState(0);
+  const [notarizing,setNotarizing]=useState(false);
+  const [notaryStatus,setNotaryStatus]=useState('');
+  const [notaryChain,setNotaryChain]=useState(()=>{try{return JSON.parse(localStorage.getItem('wapp_notary_chain')||'[]');}catch(e){return [];}});
   const [isReplaying,setIsReplaying]=useState(false);
   const [replayText,setReplayText]=useState("");
   const [replayProgress,setReplayProgress]=useState(0);
@@ -209,6 +212,30 @@ function WritingApp(){
   const [paraFlags,setParaFlags]=useState(()=>{try{const s=localStorage.getItem(PARA_FLAGS_KEY);return s?JSON.parse(s):{};}catch(e){return{};}});
   // Cloud sync
   const WORKER_URL='https://nd-timer.stringhs05.workers.dev';
+
+  // ── 公証（ハッシュチェーン + GitHub）────────────────────────────
+  // 原稿本文はGitHubに送らない。送るのは記録から計算したSHA-256のみ。
+  // 各エントリは直前のエントリのハッシュを含むため（ハッシュチェーン）、
+  // 途中を書き換えると以降がすべて壊れ、改ざんが検出できる。
+  // GitHub側のコミット到達時刻は手元で偽装できないので、
+  // 「この記録がその時刻に存在した」ことの第三者証明になる。
+  const NOTARY_KEY='wapp_notary_chain';
+  const sha256Hex=async str=>{
+    const buf=new TextEncoder().encode(str);
+    const digest=await crypto.subtle.digest('SHA-256',buf);
+    return Array.from(new Uint8Array(digest)).map(b=>b.toString(16).padStart(2,'0')).join('');
+  };
+  const loadChain=()=>{try{return JSON.parse(localStorage.getItem(NOTARY_KEY)||'[]');}catch(e){return [];}};
+  const saveChain=c=>{try{localStorage.setItem(NOTARY_KEY,JSON.stringify(c));}catch(e){}};
+  // 記録の正規化：本文そのものではなく、記録の構造だけをハッシュ対象にする
+  const buildRecordDigestSource=()=>JSON.stringify({
+    docId:_DOC_ID,
+    sessionStart:sessionStartRef.current,
+    initialText:initialTextRef.current,
+    finalText:displayTextRef.current,
+    diffLog:diffLogRef.current,
+    keystrokeLog:keystrokeLogRef.current,
+  });
   const getToken=()=>localStorage.getItem('wapp_jt')||'';
   const [syncMode,setSyncMode]=useState(false);
   const [syncing,setSyncing]=useState(false);
@@ -241,6 +268,116 @@ function WritingApp(){
   const [cardQueue,setCardQueue]=useState(()=>{try{const s=localStorage.getItem('writing_app_card_queue_v1');return s?JSON.parse(s):[];}catch(e){return[];}});
   const [cardImageMap,setCardImageMap]=useState(()=>{try{const s=localStorage.getItem(CARD_IMAGE_MAP_KEY);return s?JSON.parse(s):{};}catch(e){return{};}});
   const [showImagePicker,setShowImagePicker]=useState(false);
+
+  // ── 執筆モード：在席タイマー ──────────────────────────────
+  // 打鍵は問わない。画面に在席している時間だけを測り、
+  // タブ切替・ウィンドウ切替（visibilitychange / blur）で即座に0へ戻す。
+  const [writeThresholdMin,setWriteThresholdMin]=useState(()=>{
+    try{const v=parseInt(localStorage.getItem('wapp_write_threshold_min')||'5');return isNaN(v)?5:Math.max(5,v);}catch(e){return 5;}
+  });
+  const [presenceSec,setPresenceSec]=useState(0);
+  const [writePanelOpen,setWritePanelOpen]=useState(false);
+  const [writeUnlockFlash,setWriteUnlockFlash]=useState(false);
+  const [lastUnlockAt,setLastUnlockAt]=useState(()=>{
+    try{const log=JSON.parse(localStorage.getItem('wapp_write_unlock_log')||'[]');return log.length?log[log.length-1]:null;}catch(e){return null;}
+  });
+  const [rewardDevice,setRewardDevice]=useState(()=>{
+    try{return localStorage.getItem('nd_reward_device')||'mac';}catch(e){return 'mac';}
+  });
+  const hasNativeBridge=typeof window!=='undefined'&&window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.quizBridge;
+  const presenceIntervalRef=useRef(null);
+  const presenceActiveRef=useRef(false);
+
+  useEffect(()=>{try{localStorage.setItem('wapp_write_threshold_min',String(writeThresholdMin));}catch(e){}},[writeThresholdMin]);
+  useEffect(()=>{try{localStorage.setItem('nd_reward_device',rewardDevice);}catch(e){}},[rewardDevice]);
+
+  const fireWritingUnlock=()=>{
+    try{
+      if(window.webkit&&window.webkit.messageHandlers&&window.webkit.messageHandlers.quizBridge){
+        window.webkit.messageHandlers.quizBridge.postMessage('unlock');
+      }
+    }catch(e){}
+    try{
+      const log=JSON.parse(localStorage.getItem('wapp_write_unlock_log')||'[]');
+      log.push(Date.now());
+      while(log.length>50)log.shift();
+      localStorage.setItem('wapp_write_unlock_log',JSON.stringify(log));
+    }catch(e){}
+    setLastUnlockAt(Date.now());
+    setWriteUnlockFlash(true);
+    setTimeout(()=>setWriteUnlockFlash(false),4000);
+    sound('paraOn');
+  };
+
+  useEffect(()=>{
+    const thresholdSec=Math.max(5,writeThresholdMin)*60;
+    const stopTicking=()=>{
+      presenceActiveRef.current=false;
+      clearInterval(presenceIntervalRef.current);
+      presenceIntervalRef.current=null;
+    };
+    const resetPresence=()=>{
+      stopTicking();
+      setPresenceSec(0);
+    };
+    const startTicking=()=>{
+      if(presenceActiveRef.current)return;
+      if(document.hidden)return;
+      presenceActiveRef.current=true;
+      presenceIntervalRef.current=setInterval(()=>{
+        setPresenceSec(s=>{
+          const next=s+1;
+          if(next>=thresholdSec){
+            fireWritingUnlock();
+            return 0;
+          }
+          return next;
+        });
+      },1000);
+    };
+
+    if(hasNativeBridge){
+      // ネイティブアプリ内：どのアプリに切り替わったかはSwift（NSWorkspace）だけが分かる。
+      // なのでリセット判定の主導権はSwiftに渡し、ここはSwiftからの合図を待つだけにする。
+      // ・window.__presenceResume() … 自アプリへ復帰（またはリセット後の再開）
+      // ・window.__presenceReset()  … 許可されていないアプリへ切替 → 0にリセット
+      // 許可アプリ（Preview/Finderなど）へ切り替えたときはSwiftから何も呼ばれず、
+      // このsetIntervalがそのまま動き続ける＝タイマーは止まらず進み続ける。
+      window.__presenceResume=()=>{
+        startTicking();
+      };
+      window.__presenceReset=()=>{
+        resetPresence();
+      };
+      if(!document.hidden) startTicking();
+      return ()=>{
+        stopTicking();
+        delete window.__presenceResume;
+        delete window.__presenceReset;
+      };
+    }
+
+    // ブラウザ単体（連携なし）：Swiftによる判別ができないので、
+    // 従来通り離脱＝即リセットのシンプルな挙動にフォールバックする。
+    const onVisibility=()=>{ if(document.hidden) resetPresence(); else startTicking(); };
+    const onBlur=()=>resetPresence();
+    const onFocus=()=>{ if(!document.hidden) startTicking(); };
+    if(!document.hidden) startTicking();
+    document.addEventListener('visibilitychange',onVisibility);
+    window.addEventListener('blur',onBlur);
+    window.addEventListener('focus',onFocus);
+    return ()=>{
+      stopTicking();
+      document.removeEventListener('visibilitychange',onVisibility);
+      window.removeEventListener('blur',onBlur);
+      window.removeEventListener('focus',onFocus);
+    };
+  },[writeThresholdMin,hasNativeBridge]);
+
+  const fmtMMSS=totalSec=>{const m=Math.floor(totalSec/60);const s=totalSec%60;return `${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;};
+  const writeThresholdSec=Math.max(5,writeThresholdMin)*60;
+  const writeRemainingSec=Math.max(0,writeThresholdSec-presenceSec);
+  const writeProgressPct=Math.min(100,(presenceSec/writeThresholdSec)*100);
 
   // Search / Replace
   const [showSearch,setShowSearch]=useState(false);
@@ -721,6 +858,70 @@ function WritingApp(){
     }catch(e){setSyncStatus('❌ '+e.message);}
     setSyncing(false);
   };
+  // ── 公証：ハッシュだけをGitHubに刻む ──────────────────────────
+  const notarize=async()=>{
+    const tk=getToken();
+    if(!tk){setNotaryStatus('⚠️ トークン未設定（⚖️パネルで設定してください）');return;}
+    if(!sessionStartRef.current||diffLogRef.current.length<2){setNotaryStatus('⚠️ 記録がまだありません');return;}
+    setNotarizing(true);setNotaryStatus('ハッシュを計算中...');
+    try{
+      const chain=loadChain();
+      const prevHash=chain.length?chain[chain.length-1].hash:'0'.repeat(64);
+      const recordHash=await sha256Hex(buildRecordDigestSource());
+      const createdAt=new Date().toISOString();
+      // 直前のハッシュを含めて連鎖させる
+      const linkHash=await sha256Hex(JSON.stringify({prevHash,recordHash,createdAt,docId:_DOC_ID}));
+      const entry={
+        seq:chain.length+1,
+        docId:_DOC_ID,
+        title:docTitle,
+        createdAt,
+        prevHash,
+        recordHash,
+        hash:linkHash,
+        stats:{
+          chars:displayTextRef.current.length,
+          diffEvents:diffLogRef.current.length,
+          keystrokes:keystrokeLogRef.current.length,
+          sessionStart:new Date(sessionStartRef.current).toISOString(),
+        },
+      };
+      setNotaryStatus('GitHubに記録中...');
+      const r=await fetch(`${WORKER_URL}/notary/commit`,{
+        method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({t:tk,entry}),
+      });
+      if(!r.ok){
+        const msg=await r.text().catch(()=>'');
+        throw new Error('GitHub記録失敗 '+(msg||r.status));
+      }
+      const res=await r.json().catch(()=>({}));
+      entry.commitSha=res.commitSha||null;
+      entry.commitUrl=res.commitUrl||null;
+      chain.push(entry);saveChain(chain);
+      setNotaryChain(chain);
+      setNotaryStatus(`✅ 公証完了 #${entry.seq}（${entry.hash.slice(0,12)}…）`);
+      sound('paraOn');
+    }catch(e){setNotaryStatus('❌ '+e.message);}
+    setNotarizing(false);
+  };
+  // 手元のチェーンが壊れていないかを検証する
+  const verifyChain=async()=>{
+    const chain=loadChain();
+    if(!chain.length){setNotaryStatus('⚠️ 公証記録がありません');return;}
+    for(let i=0;i<chain.length;i++){
+      const e=chain[i];
+      const expectedPrev=i===0?'0'.repeat(64):chain[i-1].hash;
+      if(e.prevHash!==expectedPrev){setNotaryStatus(`❌ 連鎖が壊れています（#${e.seq}）`);return;}
+      const recomputed=await sha256Hex(JSON.stringify({prevHash:e.prevHash,recordHash:e.recordHash,createdAt:e.createdAt,docId:e.docId}));
+      if(recomputed!==e.hash){setNotaryStatus(`❌ ハッシュが一致しません（#${e.seq}）`);return;}
+    }
+    // 現在の記録が最新の公証と一致するかも確認
+    const current=await sha256Hex(buildRecordDigestSource());
+    const last=chain[chain.length-1];
+    const matches=current===last.recordHash;
+    setNotaryStatus(`✅ 連鎖は健全（${chain.length}件）／現在の記録は最新の公証と${matches?'一致':'不一致（公証後に加筆あり）'}`);
+  };
   const downloadFromCloud=async(docId)=>{
     const tk=getToken();if(!tk){setSyncStatus('⚠️ トークン未設定');return;}
     setSyncing(true);setSyncStatus('ダウンロード中...');
@@ -954,6 +1155,9 @@ function WritingApp(){
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} onClick={()=>enterCardMode()}>🃏</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:"1px solid #30363d",background:"none",color:"#8b949e",fontFamily:"monospace"}} title="カーソル位置の段落をカードで編集" onClick={openCurrentParaAsCard}>¶</button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${judgeMode?"#d29922":"#30363d"}`,background:judgeMode?"#1a1500":"none",color:judgeMode?"#d29922":"#8b949e",fontFamily:"monospace"}} onClick={()=>setJudgeMode(v=>!v)}>⚖️</button>
+          <button title="執筆モード：在席タイマー" style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",display:"flex",alignItems:"center",gap:"5px",border:`1px solid ${writePanelOpen?"#3fb950":"#30363d"}`,background:writeUnlockFlash?"#0c2a12":(writePanelOpen?"#0d1f14":"none"),color:writeUnlockFlash?"#3fb950":(writePanelOpen?"#3fb950":"#8b949e"),fontFamily:"monospace",transition:"background 0.3s,color 0.3s"}} onClick={()=>setWritePanelOpen(v=>!v)}>
+            🖋 <span style={{fontVariantNumeric:"tabular-nums"}}>{fmtMMSS(writeRemainingSec)}</span>
+          </button>
           <button style={{padding:"4px 8px",fontSize:"11px",borderRadius:"4px",cursor:"pointer",border:`1px solid ${syncMode?"#58a6ff":"#30363d"}`,background:syncMode?"#0d1f3c":"none",color:syncMode?"#58a6ff":"#8b949e",fontFamily:"monospace"}} onClick={()=>{setSyncMode(v=>!v);if(!syncMode)listCloudDocs();}}>☁️</button>
           <button onClick={()=>setEditorWidthIdx(i=>Math.max(0,i-1))} disabled={editorWidthIdx===0} style={{...S.btn("#8b949e"),padding:"3px 7px",opacity:editorWidthIdx===0?0.3:1,fontSize:"11px"}}>←</button>
           <button onClick={()=>setEditorWidthIdx(i=>Math.min(WIDTH_STEPS.length-1,i+1))} disabled={editorWidthIdx===WIDTH_STEPS.length-1} style={{...S.btn("#8b949e"),padding:"3px 7px",opacity:editorWidthIdx===WIDTH_STEPS.length-1?0.3:1,fontSize:"11px"}}>→</button>
@@ -964,6 +1168,56 @@ function WritingApp(){
           {isRecording&&<div style={S.recDot}/>}
         </div>
       </div>
+
+      {/* 執筆モード：在席タイマー パネル */}
+      {writePanelOpen&&(
+        <div style={{background:"#161b22",borderBottom:`1px solid ${writeUnlockFlash?"#3fb950":"#21262d"}`,padding:"12px 16px",flexShrink:0,display:"flex",flexDirection:"column",gap:"8px",transition:"border-color 0.3s"}}>
+          <div style={{display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+            <span style={{fontFamily:"monospace",fontSize:"11px",color:"#8b949e"}}>🖋 執筆モード：在席タイマー</span>
+            <span style={{fontFamily:"monospace",fontSize:"10px",color:hasNativeBridge?"#3fb950":"#8b949e"}}>
+              {hasNativeBridge?"● ネイティブ連携あり":"○ ブラウザ単体（連携なし・表示のみ）"}
+            </span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:"14px"}}>
+            <div style={{fontFamily:"monospace",fontSize:"28px",fontWeight:700,color:writeUnlockFlash?"#3fb950":"#e0dbd0",fontVariantNumeric:"tabular-nums",minWidth:"90px"}}>
+              {fmtMMSS(writeRemainingSec)}
+            </div>
+            <div style={{flex:1,height:"6px",background:"#0d1117",borderRadius:"3px",overflow:"hidden"}}>
+              <div style={{height:"100%",width:`${writeProgressPct}%`,background:writeUnlockFlash?"#3fb950":"#58a6ff",transition:"width 1s linear,background 0.3s"}}/>
+            </div>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:"8px",fontFamily:"monospace",fontSize:"10px",color:"#8b949e"}}>
+            <span>しきい値：</span>
+            <input type="number" min="5" max="180" value={writeThresholdMin}
+              onChange={e=>{const v=parseInt(e.target.value);if(!isNaN(v))setWriteThresholdMin(v);}}
+              onBlur={()=>setWriteThresholdMin(v=>Math.max(5,v||5))}
+              style={{width:"48px",background:"#0d1117",color:"#c9d1d9",border:"1px solid #30363d",borderRadius:"3px",padding:"3px 6px",fontFamily:"monospace",fontSize:"10px"}}/>
+            <span>分</span>
+            <span style={{marginLeft:"12px",color:"#484f58"}}>離脱（タブ・ウィンドウ切替）で即リセット</span>
+          </div>
+          <div style={{display:"flex",alignItems:"center",gap:"8px",fontFamily:"monospace",fontSize:"10px",color:"#8b949e"}}>
+            <span>報酬の解除先：</span>
+            <button onClick={()=>setRewardDevice('mac')}
+              style={{padding:"3px 8px",borderRadius:"3px",cursor:"pointer",border:`1px solid ${rewardDevice==='mac'?"#3fb950":"#30363d"}`,background:rewardDevice==='mac'?"#0d1f14":"none",color:rewardDevice==='mac'?"#3fb950":"#8b949e",fontFamily:"monospace",fontSize:"10px"}}>
+              💻 Mac（Chrome）
+            </button>
+            <button onClick={()=>setRewardDevice('quest')}
+              style={{padding:"3px 8px",borderRadius:"3px",cursor:"pointer",border:`1px solid ${rewardDevice==='quest'?"#3fb950":"#30363d"}`,background:rewardDevice==='quest'?"#0d1f14":"none",color:rewardDevice==='quest'?"#3fb950":"#8b949e",fontFamily:"monospace",fontSize:"10px"}}>
+              🥽 Meta Quest
+            </button>
+          </div>
+          {lastUnlockAt&&(
+            <div style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58"}}>
+              直近の完走：{new Date(lastUnlockAt).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}
+            </div>
+          )}
+          {writeUnlockFlash&&(
+            <div style={{fontFamily:"monospace",fontSize:"12px",color:"#3fb950",fontWeight:700}}>
+              ✅ 完走！{hasNativeBridge?"報酬を解除しました":"（ブラウザ単体のためローカル記録のみ）"}
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Search panel */}
       {showSearch&&(
@@ -1010,6 +1264,37 @@ function WritingApp(){
             {restoreError&&<div style={{fontFamily:"monospace",fontSize:"10px",color:"#f85149",marginTop:"4px"}}>{restoreError}</div>}
             <div style={{display:"flex",gap:"8px",marginTop:"8px"}}><button style={S.btn("#3fb950")} onClick={restoreInstant}>⚡ 即時復元</button><button style={S.btn("#d29922")} onClick={restoreTimelapse}>▶ コマ送り</button></div>
           </div>)}
+          <div style={{background:"#0d1117",borderRadius:"4px",padding:"10px",display:"flex",flexDirection:"column",gap:"6px"}}>
+            <div style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",letterSpacing:"1px"}}>
+              NOTARY — ハッシュ公証（本文は送信しません）
+            </div>
+            <div style={{display:"flex",gap:"8px",alignItems:"center",flexWrap:"wrap"}}>
+              <button style={S.btn(notarizing?"#484f58":"#a371f7")} onClick={notarize} disabled={notarizing}>
+                {notarizing?"⏳ 記録中...":"🔏 公証する"}
+              </button>
+              <button style={S.btn("#8b949e")} onClick={verifyChain}>✓ 連鎖を検証</button>
+              <span style={{fontFamily:"monospace",fontSize:"10px",color:"#8b949e"}}>
+                {notaryChain.length?`${notaryChain.length}件の公証`:"未公証"}
+              </span>
+            </div>
+            {notaryStatus&&(
+              <div style={{fontFamily:"monospace",fontSize:"10px",color:notaryStatus.startsWith('❌')?"#f85149":notaryStatus.startsWith('⚠️')?"#d29922":"#3fb950",wordBreak:"break-all"}}>
+                {notaryStatus}
+              </div>
+            )}
+            {notaryChain.length>0&&(
+              <div style={{maxHeight:"80px",overflowY:"auto",fontFamily:"monospace",fontSize:"10px"}}>
+                {notaryChain.slice(-5).reverse().map(e=>(
+                  <div key={e.seq} style={{lineHeight:"1.8",display:"flex",gap:"8px",color:"#8b949e"}}>
+                    <span style={{color:"#a371f7",flexShrink:0}}>#{e.seq}</span>
+                    <span style={{flexShrink:0}}>{new Date(e.createdAt).toLocaleString('ja-JP',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'})}</span>
+                    <span style={{color:"#484f58"}}>{e.hash.slice(0,16)}…</span>
+                    {e.commitUrl&&<a href={e.commitUrl} target="_blank" rel="noreferrer" style={{color:"#58a6ff",textDecoration:"none"}}>↗</a>}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
           {keystrokeLog.length>0&&(<div><div style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",marginBottom:"4px",letterSpacing:"1px"}}>KEYSTROKE LOG — {keystrokeLog.length} events</div><div style={{maxHeight:"90px",overflowY:"auto",fontFamily:"monospace",fontSize:"10px"}}>{keystrokeLog.slice(-8).map((e,i)=>(<div key={i} style={{lineHeight:"1.8",display:"flex",gap:"10px",color:e.type==="delete"?"#f85149":e.type==="compose"?"#d29922":"#c9d1d9"}}><span style={{color:"#8b949e",flexShrink:0}}>{fmtFull(e.t)}</span><span>{e.type==="compose"?`[確定]「${e.text}」`:e.type==="delete"?"← 削除":`「${e.char}」`}</span></div>))}</div></div>)}
           {chart&&(<div><div style={{fontFamily:"monospace",fontSize:"10px",color:"#484f58",marginBottom:"4px"}}>TYPING CURVE — {chart.maxLen} chars</div><svg width="100%" height="40" viewBox="0 0 280 40" preserveAspectRatio="none"><polyline points={chart.pts.map(p=>`${p.x},${p.y*(40/50)}`).join(" ")} fill="none" stroke="#3fb950" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" opacity="0.85"/></svg></div>)}
         </div>
